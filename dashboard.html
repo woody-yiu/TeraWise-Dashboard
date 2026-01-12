@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TeraWise量化選股基金投資績效</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="data.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --accent-color: #38bdf8;
+            --benchmark-color: #f59e0b;
+            --success: #10b981;
+            --danger: #ef4444;
+            --text-main: #f8fafc;
+            --card-border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        /* 自定義捲軸樣式 (Custom Scrollbar) */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(148, 163, 184, 0.2);
+            border-radius: 10px;
+            transition: 0.3s;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--accent-color);
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            margin: 0;
+            padding: 25px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .dashboard {
+            max-width: 1450px;
+            width: 100%;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        .logo {
+            font-size: 28px;
+            font-weight: 600;
+            color: var(--accent-color);
+        }
+
+        .update-info {
+            font-size: 14px;
+            color: #64748b;
+        }
+
+        .filter-bar {
+            background: var(--card-bg);
+            padding: 18px 25px;
+            border-radius: 14px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            border: var(--card-border);
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+
+        input[type="date"],
+        .search-input {
+            background: #1e293b;
+            border: 1px solid #334155;
+            color: white;
+            padding: 8px 15px;
+            border-radius: 8px;
+            font-family: inherit;
+        }
+
+        .preset-group {
+            display: flex;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 6px;
+            border-radius: 10px;
+        }
+
+        .btn-preset {
+            background: transparent;
+            border: none;
+            color: #94a3b8;
+            padding: 6px 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+
+        .btn-preset.active {
+            color: #0f172a;
+            background: var(--accent-color);
+        }
+
+        .update-btn {
+            background: var(--accent-color);
+            color: #0f172a;
+            border: none;
+            padding: 10px 25px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        /* 統計網格 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: var(--card-bg);
+            padding: 22px 25px;
+            border-radius: 18px;
+            border: var(--card-border);
+            transition: transform 0.2s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-3px);
+        }
+
+        .stat-label {
+            color: #94a3b8;
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 26px;
+            font-weight: 600;
+        }
+
+        .stat-sub {
+            font-size: 12px;
+            color: #64748b;
+            margin-top: 4px;
+        }
+
+        .chart-box {
+            background: var(--card-bg);
+            padding: 30px;
+            border-radius: 20px;
+            border: var(--card-border);
+            margin-bottom: 25px;
+            position: relative;
+        }
+
+        .main-chart-box {
+            height: 500px;
+            padding-right: 80px;
+        }
+
+        .mdd-chart-box {
+            height: 160px;
+            padding: 10px 30px;
+        }
+
+        .section-box {
+            background: var(--card-bg);
+            padding: 30px;
+            border-radius: 20px;
+            border: var(--card-border);
+            margin-bottom: 25px;
+        }
+
+        .cat-tag {
+            background: rgba(148, 163, 184, 0.1);
+            color: #94a3b8;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .flex-row {
+            display: flex;
+            gap: 25px;
+            margin-bottom: 25px;
+            align-items: stretch;
+        }
+
+        .flex-main {
+            flex: 2;
+        }
+
+        .flex-side {
+            flex: 1;
+            border-radius: 20px;
+            background: var(--card-bg);
+            padding: 25px;
+            border: var(--card-border);
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--accent-color);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* 風險指標特化 */
+        .risk-tag {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--accent-color);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        /* 熱圖樣式 */
+        .heatmap-grid {
+            display: grid;
+            grid-template-columns: 80px repeat(12, 1fr);
+            gap: 4px;
+            margin-top: 10px;
+        }
+
+        .heatmap-cell {
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            border-radius: 4px;
+            color: #fff;
+            font-weight: 600;
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .heatmap-header {
+            color: #94a3b8;
+            font-size: 12px;
+            text-align: center;
+        }
+
+        .heatmap-year {
+            color: var(--accent-color);
+            font-weight: 600;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+        }
+
+        .scroll-area {
+            max-height: 450px;
+            overflow-y: auto;
+            border-radius: 12px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #1e293b;
+            color: #94a3b8;
+            padding: 15px;
+            font-size: 14px;
+            text-align: left;
+            position: sticky;
+            top: 0;
+        }
+
+        td {
+            padding: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .pos {
+            color: var(--success);
+        }
+
+        .neg {
+            color: var(--danger);
+        }
+
+        .money {
+            font-family: 'Outfit', monospace;
+            color: var(--accent-color);
+            font-weight: 600;
+            font-size: 20px;
+        }
+
+        /* 交易統計圖表輔助樣式 */
+        .trade-stat-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .trade-stat-label {
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .trade-stat-value {
+            font-weight: 600;
+            font-size: 16px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="dashboard">
+        <header>
+            <div class="logo">TeraWise量化選股基金投資績效</div>
+            <div id="update-info" class="update-info">最後同步時間：-</div>
+        </header>
+
+        <div class="filter-bar">
+            <span style="color:#94a3b8">日期區間：</span>
+            <input type="date" id="start-date">
+            <span style="color:#475569">▸</span>
+            <input type="date" id="end-date">
+            <div class="preset-group">
+                <button class="btn-preset" onclick="applyPreset('1M', this)">1M</button>
+                <button class="btn-preset" onclick="applyPreset('3M', this)">3M</button>
+                <button class="btn-preset" onclick="applyPreset('1Y', this)">1Y</button>
+                <button class="btn-preset" id="all-btn" onclick="applyPreset('ALL', this)">ALL</button>
+            </div>
+            <button class="update-btn" onclick="updateDashboard()">更新數據分析</button>
+        </div>
+
+        <!-- 頂部核心指標 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">累積報酬率 (選定期間)</div>
+                <div class="stat-value" id="stat-ret">-%</div>
+                <div class="stat-sub" id="stat-alpha">Alpha vs 大盤: -%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">最大回撤 (MDD)</div>
+                <div class="stat-value neg" id="stat-mdd">-%</div>
+                <div class="stat-sub">最大資產回軟幅度</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">夏普比率 (Sharpe) <span class="risk-tag">DNA</span></div>
+                <div class="stat-value" id="stat-sharpe">-</div>
+                <div class="stat-sub">每單位總風險獲利</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">索提諾 (Sortino)</div>
+                <div class="stat-value" id="stat-sortino">-</div>
+                <div class="stat-sub">每單位下行風險獲利</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">卡瑪比率 (Calmar)</div>
+                <div class="stat-value" id="stat-calmar">-</div>
+                <div class="stat-sub">報酬率 / 最大回撤</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">全期年化報酬率</div>
+                <div class="stat-value pos" id="stat-ann-ret">-%</div>
+                <div class="stat-sub">CAGR 複合增長率</div>
+            </div>
+        </div>
+
+        <!-- 主走勢圖 -->
+        <div class="chart-box main-chart-box">
+            <div style="position:absolute; left:35px; top:15px; font-size:12px; color:#64748b;">單位：淨值倍數 (Normalized to
+                1.0)</div>
+            <div style="height:100%;"><canvas id="mainChart"></canvas></div>
+        </div>
+        <div class="chart-box mdd-chart-box">
+            <div style="height:100%;"><canvas id="mddChart"></canvas></div>
+        </div>
+
+        <!-- 第二層：持倉與交易統計 -->
+        <div class="flex-row">
+            <div class="flex-main section-box">
+                <h3 class="section-title">現有持倉部位 (Holdings)</h3>
+                <div class="scroll-area" style="max-height: 380px;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>標的 / 產業</th>
+                                <th style="text-align:right">進場 (日期/價格)</th>
+                                <th style="text-align:right">目前現價</th>
+                                <th style="text-align:right">損益 %</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holding-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="flex-side section-box">
+                <h3 class="section-title">交易獲利能力分析 (Total)</h3>
+                <div id="trade-stats-panel">
+                    <div class="trade-stat-row">
+                        <span class="trade-stat-label">總成交筆數</span>
+                        <span class="trade-stat-value" id="ts-count">-</span>
+                    </div>
+                    <div class="trade-stat-row">
+                        <span class="trade-stat-label">歷史交易勝率</span>
+                        <span class="trade-stat-value pos" id="ts-winrate">-%</span>
+                    </div>
+                    <div class="trade-stat-row">
+                        <span class="trade-stat-label">平均獲利 (Win)</span>
+                        <span class="trade-stat-value pos" id="ts-avgwin">-%</span>
+                    </div>
+                    <div class="trade-stat-row">
+                        <span class="trade-stat-label">平均虧損 (Loss)</span>
+                        <span class="trade-stat-value neg" id="ts-avgloss">-%</span>
+                    </div>
+                    <div class="trade-stat-row" style="border-bottom:none; margin-bottom:15px;">
+                        <span class="trade-stat-label">獲利因子 (Profit Factor)</span>
+                        <span class="trade-stat-value" id="ts-pf">-</span>
+                    </div>
+                    <div style="height: 140px;"><canvas id="winLossChart"></canvas></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 第三層：產業分布與平倉紀錄 -->
+        <div class="flex-row">
+            <div class="flex-side section-box">
+                <h3 class="section-title">當前產業配置比例</h3>
+                <div style="height: 320px;"><canvas id="sectorChart"></canvas></div>
+            </div>
+            <div class="flex-main section-box">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+                    <h3 class="section-title" style="margin:0;">歷史平倉明細</h3>
+                    <input type="text" id="trade-search" class="search-input" style="width: 250px;"
+                        placeholder="搜尋股票..." oninput="populateTrades()">
+                </div>
+                <div class="scroll-area" style="max-height: 350px;">
+                    <table id="trade-table">
+                        <thead>
+                            <tr>
+                                <th>日期 (進/出)</th>
+                                <th>標的</th>
+                                <th>產業</th>
+                                <th style="text-align:right">進/出場價</th>
+                                <th style="text-align:right">平倉報酬</th>
+                                <th style="text-align:center">出場原因</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trade-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部：月度熱圖 -->
+        <div class="section-box">
+            <h3 class="section-title">月度報酬率熱圖周期分析 (Historical Heatmap)</h3>
+            <div id="heatmap-container" style="overflow-x: auto; padding-bottom: 20px;"></div>
+        </div>
+    </div>
+
+    <script>
+        let mainChart, mddChart, sectorChart, winLossChart;
+
+        const lastValueLabelPlugin = {
+            id: 'lastValueLabel',
+            afterDraw: (chart) => {
+                const { ctx, chartArea: { right }, scales: { y } } = chart;
+                chart.data.datasets.forEach((dataset, i) => {
+                    const meta = chart.getDatasetMeta(i);
+                    if (meta.hidden) return;
+                    const lastPoint = meta.data[meta.data.length - 1];
+                    if (!lastPoint) return;
+                    const val = dataset.data[dataset.data.length - 1];
+                    const ret = ((val - 1) * 100).toFixed(2) + '%';
+                    ctx.save();
+                    ctx.beginPath(); // 重要：加入這行防止橘色區塊填滿整個圖表
+                    ctx.fillStyle = dataset.borderColor;
+                    const rectW = 65, rectH = 22;
+                    const x = right + 5, yPos = lastPoint.y - (rectH / 2);
+                    if (ctx.roundRect) {
+                        ctx.roundRect(x, yPos, rectW, rectH, 4);
+                    } else {
+                        ctx.rect(x, yPos, rectW, rectH);
+                    }
+                    ctx.fill();
+                    ctx.fillStyle = '#0f172a';
+                    ctx.font = 'bold 11px Outfit';
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.fillText(ret, x + (rectW / 2), lastPoint.y);
+                    ctx.restore();
+                });
+            }
+        };
+
+        function init() {
+            if (typeof fundData === 'undefined') return;
+            document.getElementById('update-info').innerText = "最後同步時間：" + fundData.summary.last_update;
+
+            // 填充全局指標
+            document.getElementById('stat-sharpe').innerText = fundData.summary.sharpe;
+            document.getElementById('stat-sortino').innerText = fundData.summary.sortino;
+            document.getElementById('stat-calmar').innerText = fundData.summary.calmar;
+            document.getElementById('stat-ann-ret').innerText = fundData.summary.ann_ret + '%';
+
+            // 填充交易統計
+            const ts = fundData.trade_stats;
+            document.getElementById('ts-count').innerText = ts.total_trades + " 筆";
+            document.getElementById('ts-winrate').innerText = ts.win_rate + "%";
+            document.getElementById('ts-avgwin').innerText = "+" + ts.avg_win + "%";
+            document.getElementById('ts-avgloss').innerText = ts.avg_loss + "%";
+            document.getElementById('ts-pf').innerText = ts.profit_factor;
+
+            applyPreset('ALL', document.getElementById('all-btn'));
+        }
+
+        function applyPreset(type, btn) {
+            document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const history = fundData.history;
+            const end = history[history.length - 1].date;
+            let start = history[0].date;
+            const dt = new Date(end);
+            if (type === '1M') dt.setMonth(dt.getMonth() - 1);
+            else if (type === '3M') dt.setMonth(dt.getMonth() - 3);
+            else if (type === '1Y') dt.setFullYear(dt.getFullYear() - 1);
+            if (type !== 'ALL') start = dt.toISOString().split('T')[0];
+
+            document.getElementById('start-date').value = start < history[0].date ? history[0].date : start;
+            document.getElementById('end-date').value = end;
+            updateDashboard();
+        }
+
+        function updateDashboard() {
+            const start = document.getElementById('start-date').value;
+            const end = document.getElementById('end-date').value;
+            const filtered = fundData.history.filter(h => h.date >= start && h.date <= end);
+            if (filtered.length === 0) return;
+
+            const sNav = filtered[0].nav, eNav = filtered[filtered.length - 1].nav;
+            const totalRet = (eNav / sNav - 1) * 100;
+            const benchRet = (filtered[filtered.length - 1].benchmark / filtered[0].benchmark - 1) * 100;
+
+            document.getElementById('stat-ret').innerText = totalRet.toFixed(2) + '%';
+            document.getElementById('stat-ret').className = 'stat-value ' + (totalRet >= 0 ? 'pos' : 'neg');
+            document.getElementById('stat-mdd').innerText = Math.min(...filtered.map(h => h.mdd)).toFixed(2) + '%';
+
+            const alpha = totalRet - benchRet;
+            document.getElementById('stat-alpha').innerText = `Alpha vs 大盤: ${(alpha > 0 ? '+' : '')}${alpha.toFixed(2)}%`;
+            document.getElementById('stat-alpha').style.color = alpha >= 0 ? 'var(--success)' : 'var(--danger)';
+
+            renderMainCharts(filtered);
+            renderHeatmap(fundData.heatmap);
+            renderSectorChart(fundData.sectors);
+            renderWinLossChart(fundData.trade_stats);
+            populateHoldings();
+            populateTrades();
+        }
+
+        function renderWinLossChart(ts) {
+            const ctx = document.getElementById('winLossChart').getContext('2d');
+            if (winLossChart) winLossChart.destroy();
+            winLossChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['平均獲利', '平均虧損'],
+                    datasets: [{
+                        data: [ts.avg_win, Math.abs(ts.avg_loss)],
+                        backgroundColor: ['rgba(16, 185, 129, 0.7)', 'rgba(239, 68, 68, 0.7)'],
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { ticks: { color: '#94a3b8' }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function renderHeatmap(data) {
+            const container = document.getElementById('heatmap-container');
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            let html = '<div class="heatmap-grid"><div class="heatmap-header">Year</div>' +
+                months.map(m => `<div class="heatmap-header">${m}</div>`).join('') + '</div>';
+
+            Object.keys(data).sort((a, b) => b - a).forEach(yr => {
+                html += `<div class="heatmap-grid"><div class="heatmap-year">${yr}</div>`;
+                for (let m = 1; m <= 12; m++) {
+                    const obj = data[yr][m] || null;
+                    let bg = 'rgba(255,255,255,0.03)', col = 'transparent', content = '-';
+                    if (obj !== null) {
+                        const val = obj.ret;
+                        const mTop = obj.market_top || '-';
+                        const pTop = obj.port_top || '-';
+                        col = '#fff';
+                        bg = val > 0 ? `rgba(16, 185, 129, ${Math.min(val / 8 + 0.1, 1)})` : `rgba(239, 68, 68, ${Math.min(Math.abs(val) / 8 + 0.1, 1)})`;
+                        content = `
+                            <div style="font-weight:600; font-size:13px;">${val}%</div>
+                            <div style="font-size:9px; margin-top:3px; text-align:left; width:100%; padding-left:5px;">
+                                <span style="color:rgba(255,255,255,0.6)">市:</span> ${mTop}<br>
+                                <span style="color:rgba(56, 189, 248, 1)">持:</span> ${pTop}
+                            </div>`;
+                    }
+                    html += `<div class="heatmap-cell" style="background:${bg}; color:${col}; flex-direction:column; height: 65px; justify-content:center;">${content}</div>`;
+                }
+                html += '</div>';
+            });
+            container.innerHTML = html;
+        }
+
+        function renderSectorChart(data) {
+            const ctx = document.getElementById('sectorChart').getContext('2d');
+            if (sectorChart) sectorChart.destroy();
+            sectorChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.map(d => d.name),
+                    datasets: [{ data: data.map(d => d.value), backgroundColor: ['#38bdf8', '#10b981', '#fbbf24', '#f87171', '#a78bfa', '#ec4899', '#94a3b8'], borderWidth: 0 }]
+                },
+                options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 11 }, padding: 15 } } } }
+            });
+        }
+
+        function populateHoldings() {
+            const tbody = document.getElementById('holding-body');
+            tbody.innerHTML = fundData.current_holdings.map(h => `
+                <tr>
+                    <td>
+                        <div style="font-weight:600; font-size:18px;">${h.name}</div>
+                        <div style="display:flex; align-items:center; gap:8px; margin-top:2px;">
+                            <span style="font-size:12px; color:#38bdf8; font-family:monospace">${h.stock_id}</span>
+                            <span class="cat-tag" style="font-size:10px; padding:2px 6px;">${h.category || '-'}</span>
+                        </div>
+                    </td>
+                    <td style="text-align:right">
+                        <div style="font-size:12px; color:#64748b">${h.entry_date}</div>
+                        <div class="money" style="font-size:18px; color: #94a3b8">@ ${h.entry_price}</div>
+                    </td>
+                    <td style="text-align:right">
+                        <div style="font-size:12px; color:#64748b">${h.current_date}</div>
+                        <div class="money" style="font-size:18px;">${h.current_price}</div>
+                    </td>
+                    <td style="text-align:right; font-weight:600; font-size: 22px;" class="${h.pnl >= 0 ? 'pos' : 'neg'}">${h.pnl}%</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateTrades() {
+            const search = document.getElementById('trade-search').value.toLowerCase();
+            const trades = fundData.trades.filter(t => t.stock_id.includes(search) || t.name.toLowerCase().includes(search)).slice(0, 50);
+            document.getElementById('trade-body').innerHTML = trades.map(t => `
+                <tr>
+                    <td style="font-size:12px; color:#94a3b8; line-height:1.4">
+                        <span style="color:#64748b">IN:</span> ${t.entry_date}<br>
+                        <span style="color:#38bdf8">OUT:</span> ${t.exit_date}
+                    </td>
+                    <td><div style="font-weight:600; font-size:18px;">${t.name}</div><div style="font-size:11px; color:#38bdf8">${t.stock_id}</div></td>
+                    <td><span class="cat-tag">${t.category || '-'}</span></td>
+                    <td style="text-align:right" class="money">${t.entry_price} → ${t.exit_price}</td>
+                    <td style="text-align:right; font-weight:600; font-size: 22px;" class="${t.ret >= 0 ? 'pos' : 'neg'}">${(t.ret * 100).toFixed(2)}%</td>
+                    <td style="text-align:center"><span style="font-size:11px; background:#1e293b; padding:4px 8px; border-radius:4px; color:#94a3b8">${t.exit_reason}</span></td>
+                </tr>
+            `).join('');
+        }
+
+        function renderMainCharts(filtered) {
+            const labels = filtered.map(h => h.date), nav = filtered.map(h => h.nav / filtered[0].nav), bench = filtered.map(h => h.benchmark / filtered[0].benchmark);
+            if (mainChart) mainChart.destroy();
+            mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), {
+                type: 'line', data: {
+                    labels, datasets: [
+                        { label: '策略', data: nav, borderColor: '#38bdf8', borderWidth: 3, pointRadius: 0, tension: 0.1 },
+                        { label: '大盤', data: bench, borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, borderDash: [5, 5] }
+                    ]
+                },
+                options: { maintainAspectRatio: false, layout: { padding: { right: 75 } }, plugins: { legend: { display: false } }, scales: { x: { ticks: { color: '#64748b', maxTicksLimit: 12 }, grid: { display: false } }, y: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.05)' } } } },
+                plugins: [lastValueLabelPlugin]
+            });
+            if (mddChart) mddChart.destroy();
+            mddChart = new Chart(document.getElementById('mddChart').getContext('2d'), {
+                type: 'line', data: { labels, datasets: [{ data: filtered.map(h => h.mdd), borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.1)', fill: true, pointRadius: 0, borderWidth: 1.5 }] },
+                options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { ticks: { color: '#ef4444', font: { size: 10 }, maxTicksLimit: 3 }, grid: { display: false } } } }
+            });
+        }
+        window.onload = init;
+    </script>
+</body>
+
+</html>
