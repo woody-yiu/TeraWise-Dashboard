@@ -417,7 +417,8 @@ dashboard_data = {
         "sortino": round(sortino, 2), 
         "calmar": round(calmar, 2), 
         "ann_ret": round(ann_ret * 100, 2),
-        "mdd": round(mdd * 100, 2)      # Fix 2: Added MDD
+        "mdd": round(mdd * 100, 2),      # Fix 2: Added MDD
+        "downside_risk": round(ann_downside_vol * 100, 2) # Fix 3: Added Downside Risk
     },
     "trade_stats": trade_stats,
     "current_holdings": curr_holdings_data,
