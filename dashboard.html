@@ -736,7 +736,7 @@
             // 填充全局指標
             document.getElementById('stat-sharpe').innerText = fundData.summary.sharpe;
             document.getElementById('stat-sortino').innerText = fundData.summary.sortino;
-            document.getElementById('stat-downside').innerText = fundData.summary.downside_risk + '%';
+            document.getElementById('stat-downside').innerText = (fundData.summary.downside_risk || 0) + '%';
             document.getElementById('stat-calmar').innerText = fundData.summary.calmar;
             document.getElementById('stat-ann-ret').innerText = fundData.summary.ann_ret + '%';
 
