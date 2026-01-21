@@ -1,4 +1,4 @@
-name: Daily Dashboard Update
+name: Daily Dashboard Update (Fixed)
 
 on:
   schedule:
