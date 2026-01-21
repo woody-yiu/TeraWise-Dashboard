@@ -1,0 +1,37 @@
+name: Hourly TeraWise Update
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每個整點執行一次 (UTC+0)
+  workflow_dispatch:      # 允許你手動點擊按鈕立即執行
+
+jobs:
+  build_and_run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install finlab pandas numpy nbconvert ipykernel
+
+      - name: Run Strategy Notebook
+        env:
+          FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
+        run: |
+          # 執行 Notebook 並更新內容
+          jupyter nbconvert --to notebook --execute "(自動上傳)基金選股_15檔.ipynb" --inplace
+
+      - name: Push results to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Auto Update: ${{ github.event.head_commit.message }} [skip ci]" || exit 0
+          git push

@@ -334,6 +334,145 @@
             font-weight: 600;
             font-size: 16px;
         }
+
+        /* 策略說明樣式 */
+        .methodology-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .method-card {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 20px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .method-card h4 {
+            color: var(--accent-color);
+            margin-top: 0;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .method-list {
+            margin: 0;
+            padding-left: 20px;
+            font-size: 14px;
+            color: #cbd5e1;
+            line-height: 1.8;
+        }
+
+        /* 📱 響應式調整 (Mobile Responsive) */
+        @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .logo {
+                font-size: 24px;
+            }
+
+            .filter-bar {
+                padding: 15px;
+                gap: 10px;
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+
+            .stat-card {
+                padding: 15px;
+            }
+
+            .stat-label {
+                font-size: 14px;
+            }
+
+            .stat-value {
+                font-size: 24px;
+            }
+
+            .main-chart-box {
+                height: 350px;
+                padding: 20px 10px 50px 10px;
+            }
+
+            .mdd-chart-box {
+                height: 120px;
+                padding: 10px;
+            }
+
+            .flex-row {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .flex-main,
+            .flex-side {
+                width: 100%;
+                padding: 20px;
+                flex: none;
+            }
+
+            .section-title {
+                font-size: 20px;
+            }
+
+            /* 訊號卡片手機版改回橫向捲動，避免卡片太細 */
+            #signal-container {
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                -webkit-overflow-scrolling: touch;
+            }
+
+            .signal-card {
+                min-width: 280px !important;
+                flex: none !important;
+            }
+
+            .signal-date {
+                font-size: 20px !important;
+            }
+
+            .signal-stock {
+                font-size: 18px !important;
+            }
+
+            .heatmap-grid {
+                grid-template-columns: 60px repeat(12, 100px);
+                overflow-x: auto;
+            }
+
+            .heatmap-cell {
+                height: 60px !important;
+                font-size: 14px;
+            }
+
+            /* 表格字體放大 */
+            td,
+            th {
+                font-size: 15px;
+                padding: 12px 8px;
+            }
+
+            .money {
+                font-size: 18px;
+            }
+        }
     </style>
 </head>
 
@@ -381,6 +520,11 @@
                 <div class="stat-sub">每單位下行風險獲利</div>
             </div>
             <div class="stat-card">
+                <div class="stat-label">下行波動風險 (Downside Risk)</div>
+                <div class="stat-value" id="stat-downside">-</div>
+                <div class="stat-sub">每年平均承擔下跌波動</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-label">卡瑪比率 (Calmar)</div>
                 <div class="stat-value" id="stat-calmar">-</div>
                 <div class="stat-sub">報酬率 / 最大回撤</div>
@@ -402,10 +546,39 @@
             <div style="height:100%;"><canvas id="mddChart"></canvas></div>
         </div>
 
+        <!-- Recent Signals (Latest Signals) -->
+        <div class="section-box" style="margin-bottom: 25px;">
+            <h3 class="section-title">近期選股訊號 (Latest Signals)</h3>
+            <div id="signal-container" style="display: flex; gap: 15px; padding-bottom: 10px;">
+                <!-- 訊號卡片動態插入 -->
+            </div>
+        </div>
+
+        <!-- 🚀 NEW: 近期基金操作日誌 (Recent Operations) -->
+        <div class="section-box" style="margin-bottom: 25px;">
+            <h3 class="section-title">近期基金操作日誌 (Recent Operations)</h3>
+            <div class="scroll-area" style="max-height: 320px;"> <!-- Approximately 5 entries before scrolling -->
+                <table>
+                    <thead>
+                        <tr>
+                            <th>日期</th>
+                            <th>動作</th>
+                            <th>標的</th>
+                            <th style="text-align:right">成交價</th>
+                            <th style="text-align:right">平倉損益</th>
+                            <th>原因</th>
+                        </tr>
+                    </thead>
+                    <tbody id="operation-body"></tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- 第二層：持倉與交易統計 -->
         <div class="flex-row">
             <div class="flex-main section-box">
-                <h3 class="section-title">現有持倉部位 (Holdings)</h3>
+                <h3 class="section-title">現有持倉部位 (Holdings) <span id="holdings-count"
+                        style="font-size:14px; color:#64748b; font-weight:normal; margin-left:10px;">-</span></h3>
                 <div class="scroll-area" style="max-height: 380px;">
                     <table>
                         <thead>
@@ -457,7 +630,7 @@
             </div>
             <div class="flex-main section-box">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-                    <h3 class="section-title" style="margin:0;">歷史平倉明細</h3>
+                    <h3 class="section-title" style="margin:0;">歷史平倉明細 (Full Log)</h3>
                     <input type="text" id="trade-search" class="search-input" style="width: 250px;"
                         placeholder="搜尋股票..." oninput="populateTrades()">
                 </div>
@@ -475,6 +648,42 @@
                         </thead>
                         <tbody id="trade-body"></tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- 策略運作邏輯 -->
+        <div class="section-box" style="margin-bottom: 25px;">
+            <h3 class="section-title">策略運作邏輯 (Strategy Methodology)</h3>
+            <div class="methodology-grid">
+                <div class="method-card">
+                    <h4>🎯 核心選股體系 (Selection Philosophy)</h4>
+                    <p style="font-size: 14px; color: #94a3b8; margin-bottom: 12px;">我們結合「量化篩選」與「質性研究」，專注於捕捉具有爆發潛力的優質標的：
+                    </p>
+                    <ul class="method-list">
+                        <li><b>法人資金動向</b>：追蹤市場關鍵法人的佈局路徑，鎖定資金高度凝聚的標的。</li>
+                        <li><b>營收成長引擎</b>：嚴選具備基本面支撐、營收維持擴張態勢的成長型企業。</li>
+                        <li><b>強勢產業配置</b>：透過動態評分系統，優先布局市場龍頭產業中的領先群。</li>
+                    </ul>
+                </div>
+                <div class="method-card">
+                    <h4>🚦 進場防禦機制 (Entry Logic)</h4>
+                    <p style="font-size: 14px; color: #94a3b8; margin-bottom: 12px;">採取「由大而小
+                        (Top-Down)」的風控策略，確保每一筆投資都具備較高的勝率：</p>
+                    <ul class="method-list">
+                        <li><b>大盤環境過濾</b>：觀察市場長線趨勢，僅在整體大盤處於多頭循環階段時啟動部位配置決策。</li>
+                        <li><b>標的動能確認</b>：結合技術面指標，確認個股已脫離底部整理區間並進入多階加速段。</li>
+                        <li><b>季節性視窗</b>：根據月營收公告等關鍵時點進行週期性布局，掌握資金進駐的最優窗口。</li>
+                    </ul>
+                </div>
+                <div class="method-card">
+                    <h4>🛡️ 動態出場策略 (Exit & Risk Management)</h4>
+                    <p style="font-size: 14px; color: #94a3b8; margin-bottom: 12px;">透過系統化的紀律，將風險鎖定在可控範圍，並最大化資金效率：</p>
+                    <ul class="method-list">
+                        <li><b>嚴格停損紀律</b>：建立絕對風險底線，一旦市場走勢偏離預期即無條件執行，保護投資本金。</li>
+                        <li><b>資金效率優化</b>：針對持倉時間進行動態監控，主動汰換效率不彰的標的，確保資源集中於強勢動能。</li>
+                        <li><b>動態平衡調整</b>：隨時追蹤產業輪動，將資金彈性分配至最具即戰力的族群，維持投資組合的領先優勢。</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -527,6 +736,7 @@
             // 填充全局指標
             document.getElementById('stat-sharpe').innerText = fundData.summary.sharpe;
             document.getElementById('stat-sortino').innerText = fundData.summary.sortino;
+            document.getElementById('stat-downside').innerText = fundData.summary.downside_risk + '%';
             document.getElementById('stat-calmar').innerText = fundData.summary.calmar;
             document.getElementById('stat-ann-ret').innerText = fundData.summary.ann_ret + '%';
 
@@ -565,12 +775,19 @@
             if (filtered.length === 0) return;
 
             const sNav = filtered[0].nav, eNav = filtered[filtered.length - 1].nav;
-            const totalRet = (eNav / sNav - 1) * 100;
-            const benchRet = (filtered[filtered.length - 1].benchmark / filtered[0].benchmark - 1) * 100;
+            const sBench = filtered[0].benchmark, eBench = filtered[filtered.length - 1].benchmark;
+
+            // 1. 累積報酬率 (防呆)
+            const totalRet = (sNav !== 0) ? (eNav / sNav - 1) * 100 : 0;
+            const benchRet = (sBench !== 0) ? (eBench / sBench - 1) * 100 : 0;
 
             document.getElementById('stat-ret').innerText = totalRet.toFixed(2) + '%';
             document.getElementById('stat-ret').className = 'stat-value ' + (totalRet >= 0 ? 'pos' : 'neg');
-            document.getElementById('stat-mdd').innerText = Math.min(...filtered.map(h => h.mdd)).toFixed(2) + '%';
+
+            // 2. MDD 區間重計 (確保排除 NaN)
+            const mddList = filtered.map(h => h.mdd).filter(v => !isNaN(v) && v !== null);
+            const minMdd = mddList.length > 0 ? Math.min(...mddList) : 0;
+            document.getElementById('stat-mdd').innerText = minMdd.toFixed(2) + '%';
 
             const alpha = totalRet - benchRet;
             document.getElementById('stat-alpha').innerText = `Alpha vs 大盤: ${(alpha > 0 ? '+' : '')}${alpha.toFixed(2)}%`;
@@ -582,6 +799,35 @@
             renderWinLossChart(fundData.trade_stats);
             populateHoldings();
             populateTrades();
+            populateSignals();
+            populateOperations();
+        }
+
+        function populateOperations() {
+            const body = document.getElementById('operation-body');
+            body.innerHTML = '';
+            if (!fundData.operations) return;
+
+            fundData.operations.forEach(op => {
+                const row = document.createElement('tr');
+                const actionColor = op.action === '買入' ? 'var(--success)' : 'var(--danger)';
+                const actionBg = op.action === '買入' ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+                const pnlClass = op.pnl > 0 ? 'pos' : (op.pnl < 0 ? 'neg' : '');
+                const pnlText = op.action === '賣出' ? (op.pnl > 0 ? '+' : '') + op.pnl + '%' : '-';
+
+                row.innerHTML = `
+                    <td style="color:#64748b; font-size:14px;">${op.date}</td>
+                    <td><span class="cat-tag" style="color:${actionColor}; background:${actionBg}">${op.action}</span></td>
+                    <td>
+                        <div style="font-weight:600">${op.stock_id} ${op.name}</div>
+                        <div style="font-size:11px; color:#64748b; margin-top:2px;">${op.entry_info || ''}</div>
+                    </td>
+                    <td style="text-align:right; font-weight:600; color:var(--accent-color)">$${op.price}</td>
+                    <td style="text-align:right" class="${pnlClass}">${pnlText}</td>
+                    <td style="font-size:13px; color:#cbd5e1">${op.reason}</td>
+                `;
+                body.appendChild(row);
+            });
         }
 
         function renderWinLossChart(ts) {
@@ -653,8 +899,23 @@
             });
         }
 
+        function populateSignals() {
+            const container = document.getElementById('signal-container');
+            if (!fundData.recent_signals || fundData.recent_signals.length === 0) {
+                container.innerHTML = '<div style="color:#64748b; padding:20px;">暫無最新選股訊號</div>';
+                return;
+            }
+            container.innerHTML = fundData.recent_signals.map(s => `
+                <div class="signal-card" style="flex: 1; background: rgba(255,255,255,0.03); padding: 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05);">
+                    <div class="signal-date" style="font-size: 18px; color: var(--accent-color); font-weight: 600; margin-bottom: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">${s.date}</div>
+                    ${s.stocks.map(stk => `<div class="signal-stock" style="font-size: 16px; margin: 8px 0; color: #cbd5e1; line-height: 1.4;">▸ ${stk}</div>`).join('')}
+                </div>
+            `).join('');
+        }
+
         function populateHoldings() {
             const tbody = document.getElementById('holding-body');
+            document.getElementById('holdings-count').innerText = `目前持有 ${fundData.current_holdings.length} 檔`;
             tbody.innerHTML = fundData.current_holdings.map(h => `
                 <tr>
                     <td>
