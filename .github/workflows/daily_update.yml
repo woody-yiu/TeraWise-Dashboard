@@ -2,8 +2,8 @@ name: Daily Dashboard Update
 
 on:
   schedule:
-    # Run at 17:00 Taipei Time (09:00 UTC) every day
-    - cron: '0 9 * * *'
+    # Run at 22:00 Taipei Time (14:00 UTC) every day
+    - cron: '0 14 * * *'
   workflow_dispatch:
 
 permissions:
