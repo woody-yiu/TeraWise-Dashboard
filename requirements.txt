@@ -1,0 +1,5 @@
+finlab
+pandas
+numpy
+matplotlib
+seaborn
