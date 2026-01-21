@@ -261,8 +261,7 @@ daily_ret = df_nav['nav'].pct_change().dropna()
 ann_ret = (df_nav['nav'].iloc[-1] / df_nav['nav'].iloc[0]) ** (252 / len(df_nav)) - 1
 ann_vol = daily_ret.std() * np.sqrt(252)
 sharpe = ann_ret / ann_vol if ann_vol != 0 else 0
-downside_ret = daily_ret[daily_ret < 0]
-ann_downside_vol = downside_ret.std() * np.sqrt(252)
+ann_downside_vol = np.sqrt((daily_ret.clip(upper=0)**2).mean()) * np.sqrt(252)
 sortino = ann_ret / ann_downside_vol if ann_downside_vol != 0 else 0
 mdd_val = abs(df_nav['drawdown'].min())
 calmar = ann_ret / mdd_val if mdd_val != 0 else 0
