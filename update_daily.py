@@ -19,7 +19,7 @@ login(token)
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 5
-TOP_STOCKS = 20           
+TOP_STOCKS = 50           
 PORTFOLIO_SIZE = 15       
 
 STOP_LOSS_PCT = 0.10
