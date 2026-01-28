@@ -17,7 +17,7 @@ login(token)
 # 2. Parameters
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
-TOP_GROUPS = 20           # Updated from 5 to 20 based on Notebook
+TOP_GROUPS = 20           
 TOP_STOCKS = 50           
 PORTFOLIO_SIZE = 15       
 
@@ -25,7 +25,7 @@ STOP_LOSS_PCT = 0.10
 FIXED_HOLDING_DAYS = 40
 COOLING_OFF_DAYS = 5
 
-# Weights: Removed sync weight (Notebook update)
+# Weights
 weights = {"ret": 1.5, "turnover": 1.0, "inst": 1.0, "conc": 1.0}
 
 print("正在抓取並對齊資料...")
@@ -67,7 +67,7 @@ cat_mapper = cat_raw.drop_duplicates("stock_id", keep="last").set_index("stock_i
 
 # 3. 對齊所有資料的欄位 (寬鬆模式: 以收盤價為主)
 print("資料對齊與處理 (使用 Reindex 避免掉清單)...")
-foreign = data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)') # Notebook Updated Source
+foreign = data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
 trust = data.get('institutional_investors_trading_summary:投信買賣超股數')
 dealer = data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
 rev_yoy = data.get("monthly_revenue:去年同月增減(%)")
@@ -93,7 +93,6 @@ rev_yoy = rev_yoy.reindex(columns=common_cols)
 rev_yoy = rev_yoy.reindex(close.index, method='ffill')
 
 inst_total = trust + dealer
-# Keep Shift 2 as requested previously in Notebook
 inst_buy_yday = inst_total.shift(2).reindex(close.index)
 inst_concentration = (inst_total.shift(2) / volume.replace(0, np.nan)).reindex(close.index)
 ma200 = close.rolling(200).mean()
@@ -143,14 +142,14 @@ for date in valid_index[valid_index >= '2011-12-01']:
     stocks_in_groups = candidates[candidates > 0].index.tolist()
     
     try:
-        # 使用 intersection 確保欄位存在
-        cols = list(set(stocks_in_groups) & set(close.columns))
+        # 修復: 直接使用 stocks_in_groups，不使用 set() 以確保與 Notebook 順序一致
+        # 因為前面 common_cols 已經確保了 key 的存在，這裡直接取值是安全的
         df = pd.DataFrame({
-            "ret": ret.loc[date, cols],
-            "turnover": turnover.loc[date, cols],
-            "inst": inst_buy_yday.loc[date, cols],
-            "conc": inst_concentration.loc[date, cols],
-            "yoy": rev_yoy.loc[date, cols]
+            "ret": ret.loc[date, stocks_in_groups],
+            "turnover": turnover.loc[date, stocks_in_groups],
+            "inst": inst_buy_yday.loc[date, stocks_in_groups],
+            "conc": inst_concentration.loc[date, stocks_in_groups],
+            "yoy": rev_yoy.loc[date, stocks_in_groups]
         }).dropna()
     except: continue
     
@@ -498,7 +497,7 @@ if not os.environ.get("GITHUB_ACTIONS"):
         os.chdir(repo_dir)
         subprocess.run(["git", "add", "index.html", "update_daily.py"], check=True)
         if subprocess.run(["git", "diff", "--staged", "--quiet"]).returncode != 0:
-             subprocess.run(["git", "commit", "-m", f"Dashboard Logic Update: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
+             subprocess.run(["git", "commit", "-m", f"Dashboard Logic Strict Fix: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
              subprocess.run(["git", "push", "origin", "main"], check=True)
              print(f"✨ 發布成功！瀏覽網址: https://woody-yiu.github.io/TeraWise-Dashboard/")
         else:
