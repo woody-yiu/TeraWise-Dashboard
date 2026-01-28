@@ -1,21 +1,21 @@
-from finlab import login
-import pandas as pd
-import numpy as np
-from finlab import data
-import matplotlib.pyplot as plt
-import seaborn as sns
-from datetime import datetime, timedelta, timezone
-import warnings
+
 import os
 import json
 import subprocess
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta, timezone
+import warnings
+from finlab import login, data
 
 warnings.filterwarnings('ignore')
 
-# Enviromment check
+# 1. Login
+# 使用環境變數或預設 Token
 token = os.environ.get("FINLAB_TOKEN", "97Y21Yf07Tokqp6rnUxsQKHbc4j+HosTsqE5DNh2oWLA9n+pxaCibJSKUK190ocZ#vip_m")
 login(token)
 
+# 2. Parameters
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 5
@@ -36,7 +36,7 @@ benchmark = data.get('taiex_total_index:收盤指數')
 benchmark = benchmark[~benchmark.index.duplicated(keep='first')]
 benchmark_ma200 = benchmark.rolling(200).mean()
 
-# --- 產業資料 ---
+# --- 產業資料：同時抓取題材標籤(計算用)與官方分類(顯示用) ---
 theme_raw = data.get("security_industry_themes") 
 cat_raw = data.get("security_categories")
 
@@ -45,7 +45,7 @@ trust = data.get('institutional_investors_trading_summary:投信買賣超股數'
 dealer = data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
 rev_yoy = data.get("monthly_revenue:去年同月增減(%)")
 
-# 1. 計算用
+# 1. 計算用：維持細分標籤邏輯 (不影響原本選股結果)
 theme = theme_raw.sort_values("key_date").groupby("stock_id").last()
 def parse_category(cat_str):
     try: return cat_str.replace("[", "").replace("]", "").split(",")[0].strip("' \"")
@@ -53,7 +53,7 @@ def parse_category(cat_str):
 theme["main_category"] = theme["category"].apply(parse_category)
 group_mapper = theme["main_category"]
 
-# 2. 顯示用
+# 2. 顯示用：正確的官方產業名稱 (讓廣達回歸電腦週邊)
 cat_mapper = cat_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["category"]
 
 common_cols = close.columns.intersection(volume.columns).intersection(foreign.columns).intersection(trust.columns).intersection(dealer.columns).intersection(rev_yoy.columns).intersection(group_mapper.index)
@@ -88,28 +88,34 @@ top_groups_daily = group_score.rank(axis=1, ascending=False) <= TOP_GROUPS
 selected_stocks_signal = {}
 valid_index = close.index.intersection(top_groups_daily.index).intersection(inst_buy_yday.index).intersection(inst_concentration.index)
 
-# 為了加快雲端執行速度，這裡只重算近 500 天 + 所有需要回測的日期，但為了保險起見，我們如果資源允許，還是跑全量
-# 觀察: valid_index >= '2011-12-01'
-for date in valid_index[valid_index >= '2011-12-01']:
+# 為了加快雲端執行速度，這裡可以做一個優化：
+# 如果是在 GitHub Actions 環境，且這是一個日常更新，其實可以只跑最近一段時間。
+# 但為了保證數據全貌（包括歷史 MDD），還是跑全量比較安全。
+# 但有個技巧：如果 valid_index 太長，可以只取最近 N 天 + 歷史持倉需要的回測期。
+# 不過這裡保持與 Notebook 一致的全量回測。
+
+start_date = '2011-12-01'
+# 為了避免資料量過大導致記憶體問題或計算過久，我們確認數據起始點
+# Notebook 裡是 valid_index[valid_index >= '2011-12-01']
+
+for date in valid_index[valid_index >= start_date]:
     if date not in top_groups_daily.index: continue
     strong_groups_mask = top_groups_daily.loc[date]
     strong_groups = strong_groups_mask[strong_groups_mask].index.tolist()
     if not strong_groups: continue
     
-    # 修正: 使用 intersection 避免 key error
-    stocks_in_groups = group_mapper[group_mapper.isin(strong_groups)].index.intersection(close.columns).tolist()
-    
+    stocks_in_groups = group_mapper[group_mapper.isin(strong_groups)].index.tolist()
     try:
-        # 效能優化: 直接取 loc
+        # 使用 intersection 確保欄位存在
+        cols = list(set(stocks_in_groups) & set(close.columns))
         df = pd.DataFrame({
-            "ret": ret.loc[date, stocks_in_groups],
-            "turnover": turnover.loc[date, stocks_in_groups],
-            "inst": inst_buy_yday.loc[date, stocks_in_groups],
-            "conc": inst_concentration.loc[date, stocks_in_groups],
-            "yoy": rev_yoy.loc[date, stocks_in_groups]
+            "ret": ret.loc[date, cols],
+            "turnover": turnover.loc[date, cols],
+            "inst": inst_buy_yday.loc[date, cols],
+            "conc": inst_concentration.loc[date, cols],
+            "yoy": rev_yoy.loc[date, cols]
         }).dropna()
-    except Exception as e: 
-        continue
+    except: continue
     
     if df.empty: continue
     liq_cut = df["turnover"].quantile(1 - MIN_LIQ_PCT)
@@ -121,24 +127,27 @@ for date in valid_index[valid_index >= '2011-12-01']:
                   df["inst"].rank(pct=True) * weights["inst"] +
                   df["conc"].rank(pct=True) * weights["conc"])
     
-    # MA200 Filter
+    # 🚀 在這裡加入個股 MA200 濾網
+    # 只保留當天收盤價大於 200 日均線的股票
     current_ma200 = ma200.loc[date]
     current_close = close.loc[date]
+    
     # 確保 index 對齊
-    valid_ma_stocks = df.index.intersection(current_ma200.index).intersection(current_close.index)
-    df = df.loc[valid_ma_stocks]
+    valid_stocks = df.index.intersection(current_ma200.index).intersection(current_close.index)
+    df = df.loc[valid_stocks]
+    
     df = df[current_close[df.index] > current_ma200[df.index]]
     
     selected_stocks_signal[date] = df.sort_values("score", ascending=False).head(TOP_STOCKS).index.tolist()
 print("訊號計算完成。")
 
-# --- 終極實戰時序版 ---
+# --- 終極實戰時序版：收盤判定，次日開盤賣出 ---
 print(f"執行回測 (目標持股 {PORTFOLIO_SIZE} 檔，僅限每月 10-15 號進場)...【修正版：次日開盤賣出】")
 
 INITIAL_CAPITAL = 10_000_000
 CASH = INITIAL_CAPITAL
-PORTFOLIO = []         
-PENDING_EXITS = []     
+PORTFOLIO = []         # 當前持倉
+PENDING_EXITS = []     # 標記為「待賣出」的股票列表
 TRADE_LOG = []
 NAV_HISTORY = []
 last_buy_date = {}
@@ -153,7 +162,7 @@ for i, today in enumerate(backtest_dates):
     for p in PENDING_EXITS:
         sell_price = open_.at[today, p['stock_id']]
         if pd.isna(sell_price): 
-            sell_price = close.at[today, p['stock_id']] 
+            sell_price = close.at[today, p['stock_id']] # 若無開盤價則以今日收盤代替
             
         revenue = sell_price * p['shares']
         fee = revenue * (0.001425 * 0.1 + 0.003) 
@@ -164,9 +173,9 @@ for i, today in enumerate(backtest_dates):
             'entry_price': round(p['entry_price'], 2), 'exit_price': round(sell_price, 2),
             'ret': (revenue - fee - p['cost']) / p['cost'], 'exit_reason': p['reason']
         })
-    PENDING_EXITS = [] 
+    PENDING_EXITS = [] # 執行完畢，清空待賣清單，此時空位才真正釋放
     
-    # --- [2] 上午開盤：進場邏輯 ---
+    # --- [2] 上午開盤：進場邏輯 (檢查空位併補貨) ---
     if yesterday is not None:
         market_pass = True
         bm_yesterday = benchmark.at[yesterday, benchmark.columns[0]] if yesterday in benchmark.index else np.nan
@@ -177,22 +186,26 @@ for i, today in enumerate(backtest_dates):
         is_entry_window = 10 <= today.day <= 15
                 
         if market_pass and is_entry_window:
+            # 此時的 PORTFOLIO 已不包含昨晚標記的股票
             slots_to_fill = PORTFOLIO_SIZE - len(PORTFOLIO)
             if slots_to_fill > 0:
                 signals = selected_stocks_signal.get(yesterday, [])
                 for sid in signals:
                     if slots_to_fill <= 0: break
                     if any(p['stock_id'] == sid for p in PORTFOLIO): continue
-                    
-                    # 防呆: 檢查是否有今日開盤價與昨日收盤價 (避免除息或停牌造成錯誤)
                     if pd.isna(open_.at[today, sid]): continue
-                    if yesterday not in close.index or pd.isna(close.at[yesterday, sid]): continue
-                    if close.at[yesterday, sid] < ma200.at[yesterday, sid]: continue
+                    # 取得昨天的數值
+                    curr_ma = ma200.at[yesterday, sid]
+                    curr_close = close.at[yesterday, sid]
+                    # 嚴格條件：如果是空值(新股)，或是收盤價沒有大於均線，一律跳過
+                    if pd.isna(curr_ma) or curr_close <= curr_ma: 
+                        continue
                     
                     lbd = last_buy_date.get(sid)
                     if lbd and (close.index.get_loc(yesterday) - close.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
                         continue
                     
+                    # 計算淨值基準 (今日開盤前的淨值)
                     holdings_val = sum(close.at[today, pp['stock_id']] * pp['shares'] if pd.notna(close.at[today, pp['stock_id']]) else pp['entry_price'] * pp['shares'] for pp in PORTFOLIO)
                     target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
                     
@@ -209,10 +222,12 @@ for i, today in enumerate(backtest_dates):
                         last_buy_date[sid] = today
                         slots_to_fill -= 1
 
-    # --- [3] 下午收盤：結算淨值 ---
+    # --- [3] 下午收盤：結算淨值與判定明日賣出清單 ---
+    # 今日終了淨值
     current_holdings_value = sum(close.at[today, p['stock_id']] * p['shares'] for p in PORTFOLIO)
     current_nav = CASH + current_holdings_value
     
+    # 檢查是否有股票觸發停損或到期 (今日收盤判定，明日開盤執行)
     new_active_portfolio = []
     for p in PORTFOLIO:
         curr_price = close.at[today, p['stock_id']]
@@ -225,12 +240,13 @@ for i, today in enumerate(backtest_dates):
                 exit_reason = "Time Exit"
         
         if exit_reason:
+            # 移出持倉，改放入待賣清單
             p['reason'] = exit_reason
             PENDING_EXITS.append(p)
         else:
             new_active_portfolio.append(p)
     
-    PORTFOLIO = new_active_portfolio
+    PORTFOLIO = new_active_portfolio # 更新持倉清單
 
     NAV_HISTORY.append({
         'date': today, 'nav': current_nav, 'cash': CASH, 'holdings_count': len(PORTFOLIO)
@@ -248,25 +264,24 @@ annual_ret = (df_nav['nav'].iloc[-1] / INITIAL_CAPITAL)**(365/total_days) - 1
 annual_std = df_nav['return'].std() * np.sqrt(252)
 sharpe = (annual_ret - 0.02) / annual_std if annual_std != 0 else 0
 
-# --- 7. Dashboard Data Generation ---
-print(f"啟動 TeraWise 雲端發布流程 ...")
+# --- 終極自動化：數據分析 + 訊號補回 + 雲端發布 ---
+print(f"🚀 啟動 TeraWise 雲端發布流程 [{datetime.now().strftime('%Y-%m-%d %H:%M')}]...")
 
-# 1. Timezone Fix
-tz = timezone(timedelta(hours=8))
-last_update_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
-
+# 1. 基礎指標計算
 last_data_date = df_nav.index[-1].strftime('%Y-%m-%d')
 last_prices = close.iloc[-1]
 daily_ret = df_nav['nav'].pct_change().dropna()
 ann_ret = (df_nav['nav'].iloc[-1] / df_nav['nav'].iloc[0]) ** (252 / len(df_nav)) - 1
 ann_vol = daily_ret.std() * np.sqrt(252)
 sharpe = ann_ret / ann_vol if ann_vol != 0 else 0
-ann_downside_vol = np.sqrt((daily_ret.clip(upper=0)**2).mean()) * np.sqrt(252)
+downside_ret = daily_ret[daily_ret < 0]
+ann_downside_vol = downside_ret.std() * np.sqrt(252)
 sortino = ann_ret / ann_downside_vol if ann_downside_vol != 0 else 0
+ann_downside_deviation = np.sqrt((daily_ret.clip(upper=0)**2).mean()) * np.sqrt(252)
 mdd_val = abs(df_nav['drawdown'].min())
 calmar = ann_ret / mdd_val if mdd_val != 0 else 0
 
-# 2. Trade Stats
+# 2. 交易勝報比統計
 trade_stats = {"win_rate": 0, "avg_win": 0, "avg_loss": 0, "profit_factor": 0, "total_trades": 0}
 if TRADE_LOG:
     rets = [t['ret'] for t in TRADE_LOG]
@@ -279,7 +294,7 @@ if TRADE_LOG:
         "total_trades": len(rets)
     }
 
-# 3. Holdings
+# 3. 處理持倉細節
 curr_holdings_data = []
 sector_counter = {}
 if PORTFOLIO:
@@ -299,10 +314,9 @@ if PORTFOLIO:
         })
 sector_pie = [{"name": k, "value": v} for k, v in sector_counter.items()]
 
-# 4. Signals
+# 4. 🚀 補回最近 5 日選股訊號
 recent_signals_data = []
-# 檢查是否有訊號，若無則顯示空列表，避免錯誤
-if selected_stocks_signal:
+if 'selected_stocks_signal' in locals() and selected_stocks_signal:
     signal_dates = sorted(selected_stocks_signal.keys())[-5:]
     for d in reversed(signal_dates):
         stocks = selected_stocks_signal[d][:5]
@@ -313,7 +327,7 @@ if selected_stocks_signal:
             row_data["stocks"].append(f"{i+1}. {sid} {name} ({cat})")
         recent_signals_data.append(row_data)
 
-# 5. Operations
+# 5. 🚀 產生「近期基金操作日誌」
 recent_ops = []
 if TRADE_LOG:
     for t in TRADE_LOG:
@@ -358,7 +372,7 @@ for p in PORTFOLIO:
         seen_buys.add(key)
 recent_ops.sort(key=lambda x: x['date'], reverse=True)
 
-# 6. Heatmap
+# 6. 熱圖分析
 temp_trades = []
 if TRADE_LOG:
     for t in TRADE_LOG:
@@ -377,7 +391,6 @@ for date, group in monthly_groups:
     m_ret = (group['nav'].iloc[-1] / group['nav'].iloc[0] - 1) * 100
     test_day = group.index[-1]
     m_stock_rets = (close.loc[test_day] / close.loc[group.index[0]] - 1)
-    
     val_s = m_stock_rets.index.intersection(cat_mapper.keys())
     m_perf = m_stock_rets[val_s].groupby(cat_mapper).median()
     m_major = m_perf[m_perf.index.isin(major_sectors)]
@@ -392,7 +405,7 @@ for date, group in monthly_groups:
     if yr not in heatmap_data: heatmap_data[yr] = {}
     heatmap_data[yr][mo] = {"ret": round(m_ret, 2), "market_top": market_top, "port_top": port_top}
 
-# 7. History Trades
+# 7. 歷史平倉明細
 historical_trades = []
 if TRADE_LOG:
     for t in sorted(TRADE_LOG, key=lambda x: x['exit_date'], reverse=True)[:50]:
@@ -403,21 +416,24 @@ if TRADE_LOG:
             "exit_price": round(t['exit_price'], 2), "ret": round(t['ret'], 4), "exit_reason": t['exit_reason']
         })
 
-# Benchmark Alignment
+# 8. 建構封包並發布
+# --- 關鍵修復：對齊大盤資料並填充 ---
 bm_aligned = benchmark.reindex(df_nav.index).ffill()
 bm_col = bm_aligned.columns[0]
 
-# --- Final JSON & Output ---
-# 關鍵修正: 確保所有欄位都存在，包括 MDD
+# Time adjustment for display
+# GitHub Actions runs in UTC. We want to display Taipei Time.
+tz = timezone(timedelta(hours=8))
+last_update_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
+
 dashboard_data = {
     "summary": { 
-        "last_update": last_update_str, # Fix 1: Timezone
+        "last_update": last_update_str, 
         "sharpe": round(sharpe, 2), 
-        "sortino": round(sortino, 2), 
+        "sortino": round(sortino, 2),
+        "downside_risk": round(ann_downside_deviation * 100, 2), 
         "calmar": round(calmar, 2), 
-        "ann_ret": round(ann_ret * 100, 2),
-        "mdd": round(mdd * 100, 2),      # Fix 2: Added MDD
-        "downside_risk": round(ann_downside_vol * 100, 2) # Fix 3: Added Downside Risk
+        "ann_ret": round(ann_ret * 100, 2) 
     },
     "trade_stats": trade_stats,
     "current_holdings": curr_holdings_data,
@@ -431,22 +447,36 @@ dashboard_data = {
 
 js_inner = f"var fundData = {json.dumps(dashboard_data, ensure_ascii=False)};"
 
-# Read Template
+# 使用相對路徑，兼容 GitHub Actions 與本地執行
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# 嘗試讀取本地 dashboard.html，GitHub runner root 即為 workspace root
+# 這裡假設腳本位於專案根目錄，所以 dashboard.html 也在同一層
 template_path = os.path.join(current_dir, 'dashboard.html')
 index_path = os.path.join(current_dir, 'index.html')
 
 if not os.path.exists(template_path):
-    print(f"Template not found at {template_path}, listing dir:")
-    print(os.listdir(current_dir))
+    print(f"Error: Template not found at {template_path}")
+else:
+    with open(template_path, 'r', encoding='utf-8') as f:
+        full_html = f.read()
+    final_html = full_html.replace('<script src="data.js"></script>', f'<script>{js_inner}</script>')
+    with open(index_path, 'w', encoding='utf-8') as f:
+        f.write(final_html)
+    print("Dashboard HTML generated successfully.")
 
-with open(template_path, 'r', encoding='utf-8') as f:
-    full_html = f.read()
-
-final_html = full_html.replace('<script src="data.js"></script>', f'<script>{js_inner}</script>')
-
-with open(index_path, 'w', encoding='utf-8') as f:
-    f.write(final_html)
-
-print("update_daily.py completed successfully with MDD and Timezone fix.")
+# GitHub 自動同步 (僅在非 GitHub Actions 環境下執行)
+# 如果在 GitHub Actions 裡，交給 workflow YAML 處理 commit & push
+if not os.environ.get("GITHUB_ACTIONS"):
+    print("📤 [Local Mode] 正在同步全功能數據至雲端...")
+    repo_dir = current_dir
+    try:
+        os.chdir(repo_dir)
+        subprocess.run(["git", "add", "index.html", "update_daily.py"], check=True)
+        # 避免空的 commit
+        if subprocess.run(["git", "diff", "--staged", "--quiet"]).returncode != 0:
+             subprocess.run(["git", "commit", "-m", f"Dashboard Local Auto Update: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
+             subprocess.run(["git", "push", "origin", "main"], check=True)
+             print(f"✨ 發布成功！瀏覽網址: https://woody-yiu.github.io/TeraWise-Dashboard/")
+        else:
+             print("無變更需要提交。")
+    except Exception as e:
+        print(f"⚠️ 自動發布失敗: {e}")
