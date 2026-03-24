@@ -245,7 +245,7 @@
         /* 熱圖樣式 */
         .heatmap-grid {
             display: grid;
-            grid-template-columns: 80px repeat(12, 1fr);
+            grid-template-columns: 80px repeat(13, 1fr);
             gap: 4px;
             margin-top: 10px;
         }
@@ -453,7 +453,7 @@
             }
 
             .heatmap-grid {
-                grid-template-columns: 60px repeat(12, 100px);
+                grid-template-columns: 60px repeat(13, 100px);
                 overflow-x: auto;
             }
 
@@ -859,14 +859,20 @@
 
         function renderHeatmap(data) {
             const container = document.getElementById('heatmap-container');
-            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'YTD'];
             let html = '<div class="heatmap-grid"><div class="heatmap-header">Year</div>' +
                 months.map(m => `<div class="heatmap-header">${m}</div>`).join('') + '</div>';
 
             Object.keys(data).sort((a, b) => b - a).forEach(yr => {
                 html += `<div class="heatmap-grid"><div class="heatmap-year">${yr}</div>`;
+                let annualCompound = 1;
+                let hasData = false;
                 for (let m = 1; m <= 12; m++) {
                     const obj = data[yr][m] || null;
+                    if (obj !== null) {
+                        annualCompound *= (1 + obj.ret / 100);
+                        hasData = true;
+                    }
                     let bg = 'rgba(255,255,255,0.03)', col = 'transparent', content = '-';
                     if (obj !== null) {
                         const val = obj.ret;
@@ -883,6 +889,17 @@
                     }
                     html += `<div class="heatmap-cell" style="background:${bg}; color:${col}; flex-direction:column; height: 65px; justify-content:center;">${content}</div>`;
                 }
+                
+                let ytdBg = 'rgba(255,255,255,0.03)', ytdCol = 'transparent', ytdContent = '-';
+                if (hasData) {
+                    const ytdVal = ((annualCompound - 1) * 100).toFixed(2);
+                    ytdCol = '#fff';
+                    ytdBg = ytdVal > 0 ? `rgba(16, 185, 129, ${Math.min(ytdVal / 20 + 0.2, 1)})` : `rgba(239, 68, 68, ${Math.min(Math.abs(ytdVal) / 20 + 0.2, 1)})`;
+                    ytdContent = `
+                            <div style="font-weight:700; font-size:15px;">${ytdVal}%</div>
+                            <div style="font-size:10px; margin-top:3px; color:rgba(255,255,255,0.8)">全年績效</div>`;
+                }
+                html += `<div class="heatmap-cell" style="background:${ytdBg}; color:${ytdCol}; flex-direction:column; height: 65px; justify-content:center; border-left: 2px solid rgba(255,255,255,0.1);">${ytdContent}</div>`;
                 html += '</div>';
             });
             container.innerHTML = html;
