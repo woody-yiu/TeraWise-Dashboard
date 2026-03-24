@@ -414,10 +414,13 @@ sector_series = pd.Series(cat_mapper)
 major_sectors = sector_series.value_counts()[sector_series.value_counts() >= 10].index
 monthly_groups = df_nav.resample('M') 
 heatmap_data = {}
+prev_nav = None
 for date, group in monthly_groups:
-    if len(group) < 2: continue
+    if len(group) < 1: continue
     yr, mo = str(date.year), date.month
-    m_ret = (group['nav'].iloc[-1] / group['nav'].iloc[0] - 1) * 100
+    start_nav = prev_nav if prev_nav is not None else group['nav'].iloc[0]
+    m_ret = (group['nav'].iloc[-1] / start_nav - 1) * 100
+    prev_nav = group['nav'].iloc[-1]
     test_day = group.index[-1]
     m_stock_rets = (close.loc[test_day] / close.loc[group.index[0]] - 1)
     val_s = m_stock_rets.index.intersection(cat_mapper.keys())
