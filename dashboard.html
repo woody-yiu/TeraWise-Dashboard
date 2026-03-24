@@ -776,8 +776,15 @@
             const filtered = fundData.history.filter(h => h.date >= start && h.date <= end);
             if (filtered.length === 0) return;
 
-            const sNav = filtered[0].nav, eNav = filtered[filtered.length - 1].nav;
-            const sBench = filtered[0].benchmark, eBench = filtered[filtered.length - 1].benchmark;
+            const firstIndex = fundData.history.findIndex(h => h.date >= start && h.date <= end);
+            let sNav = filtered[0].nav, sBench = filtered[0].benchmark;
+            if (firstIndex > 0) {
+                sNav = fundData.history[firstIndex - 1].nav;
+                sBench = fundData.history[firstIndex - 1].benchmark;
+            }
+
+            const eNav = filtered[filtered.length - 1].nav;
+            const eBench = filtered[filtered.length - 1].benchmark;
 
             // 1. 累積報酬率 (防呆)
             const totalRet = (sNav !== 0) ? (eNav / sNav - 1) * 100 : 0;
@@ -795,7 +802,7 @@
             document.getElementById('stat-alpha').innerText = `Alpha vs 大盤: ${(alpha > 0 ? '+' : '')}${alpha.toFixed(2)}%`;
             document.getElementById('stat-alpha').style.color = alpha >= 0 ? 'var(--success)' : 'var(--danger)';
 
-            renderMainCharts(filtered);
+            renderMainCharts(filtered, sNav, sBench);
             renderHeatmap(fundData.heatmap);
             renderSectorChart(fundData.sectors);
             renderWinLossChart(fundData.trade_stats);
@@ -975,8 +982,10 @@
             `).join('');
         }
 
-        function renderMainCharts(filtered) {
-            const labels = filtered.map(h => h.date), nav = filtered.map(h => h.nav / filtered[0].nav), bench = filtered.map(h => h.benchmark / filtered[0].benchmark);
+        function renderMainCharts(filtered, baseNav, baseBench) {
+            const labels = filtered.map(h => h.date);
+            const nav = filtered.map(h => h.nav / baseNav);
+            const bench = filtered.map(h => h.benchmark / baseBench);
             if (mainChart) mainChart.destroy();
             mainChart = new Chart(document.getElementById('mainChart').getContext('2d'), {
                 type: 'line', data: {
