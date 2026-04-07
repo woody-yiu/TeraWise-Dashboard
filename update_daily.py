@@ -7,6 +7,9 @@ import numpy as np
 from datetime import datetime, timedelta, timezone
 import warnings
 from finlab import login, data
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 warnings.filterwarnings('ignore')
 
@@ -476,21 +479,34 @@ dashboard_data = {
     "history": [{ "date": d.strftime("%Y-%m-%d"), "nav": round(v, 2), "benchmark": round(bm_aligned.at[d, bm_col], 2), "mdd": round(m * 100, 2) } for d, v, m in zip(df_nav.index, df_nav['nav'], df_nav['drawdown']) ]
 }
 
-js_inner = f"var fundData = {json.dumps(dashboard_data, ensure_ascii=False)};"
+# --- Firebase Firestore Upload ---
+print("Uploading data to Firebase Firestore...")
+try:
+    firebase_cert = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+    if firebase_cert:
+        cert_dict = json.loads(firebase_cert)
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cert_dict)
+            firebase_admin.initialize_app(cred)
+        
+        db = firestore.client()
+        safe_data = json.loads(json.dumps(dashboard_data)) # Ensure pure python types
+        db.collection("quant_fund").document("dashboard_data").set(safe_data)
+        print("✅ Firebase Firestore update successful.")
+    else:
+        print("⚠️ FIREBASE_SERVICE_ACCOUNT not found. Skipping Firestore update.")
+except Exception as e:
+    print(f"⚠️ Failed to update Firestore: {e}")
 
+# 產生純前端 HTML (無需注入靜態資料)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 template_path = os.path.join(current_dir, 'dashboard.html')
 index_path = os.path.join(current_dir, 'index.html')
 
-if not os.path.exists(template_path):
-    print(f"Error: Template not found at {template_path}")
-else:
-    with open(template_path, 'r', encoding='utf-8') as f:
-        full_html = f.read()
-    final_html = full_html.replace('<script src="data.js"></script>', f'<script>{js_inner}</script>')
-    with open(index_path, 'w', encoding='utf-8') as f:
-        f.write(final_html)
-    print("Dashboard HTML generated successfully.")
+if os.path.exists(template_path):
+    import shutil
+    shutil.copyfile(template_path, index_path)
+    print("Dashboard HTML copied to index.html (Frontend Firebase managed).")
 
 # GitHub 自動同步
 if not os.environ.get("GITHUB_ACTIONS"):

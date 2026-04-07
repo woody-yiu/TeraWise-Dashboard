@@ -7,7 +7,9 @@
     <title>TeraWise量化選股基金投資績效</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
-    <script src="data.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
     <style>
         :root {
             --bg-color: #0f172a;
@@ -477,10 +479,23 @@
 </head>
 
 <body>
-    <div class="dashboard">
+    <!-- Login Screen -->
+    <div id="login-screen" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-color); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+        <h1 style="color: var(--accent-color); margin-bottom: 20px;">TeraWise VIP 會員登入</h1>
+        <p style="color: white; margin-bottom: 30px;">請登入以檢視量化選股基金績效與最新訊號</p>
+        <button id="google-login-btn" style="background: white; color: #333; border: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; display: flex; align-items: center; gap: 10px;">
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" style="width: 24px; height: 24px;">
+            使用 Google 帳戶登入
+        </button>
+    </div>
+
+    <div class="dashboard" id="main-dashboard" style="display: none;">
         <header>
             <div class="logo">TeraWise量化選股基金投資績效</div>
-            <div id="update-info" class="update-info">最後同步時間：-</div>
+            <div style="display: flex; gap: 20px; align-items: center;">
+                <div id="update-info" class="update-info">載入中...</div>
+                <button id="logout-btn" style="background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 5px 15px; border-radius: 6px; cursor: pointer; transition: 0.3s; font-weight: bold;">登出</button>
+            </div>
         </header>
 
         <div class="filter-bar">
@@ -697,6 +712,57 @@
     </div>
 
     <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBsHMBnmE3G7ij4rNhOuUQ1nXgN44H1TEs",
+            authDomain: "terawise-quanttw.firebaseapp.com",
+            projectId: "terawise-quanttw",
+            storageBucket: "terawise-quanttw.firebasestorage.app",
+            messagingSenderId: "381051605319",
+            appId: "1:381051605319:web:ca3fbacd42ff4677747c62",
+            measurementId: "G-TQQJ0T92ZY"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+
+        const loginScreen = document.getElementById('login-screen');
+        const mainDashboard = document.getElementById('main-dashboard');
+        
+        let fundData = null;
+
+        document.getElementById('google-login-btn').addEventListener('click', () => {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            auth.signInWithPopup(provider).catch(error => alert("登入失敗: " + error.message));
+        });
+
+        document.getElementById('logout-btn').addEventListener('click', () => auth.signOut());
+
+        auth.onAuthStateChanged(user => {
+            if (user) {
+                loginScreen.style.display = 'none';
+                mainDashboard.style.display = 'block';
+                fetchDashboardData();
+            } else {
+                loginScreen.style.display = 'flex';
+                mainDashboard.style.display = 'none';
+            }
+        });
+
+        function fetchDashboardData() {
+            document.getElementById('update-info').innerText = "資料安全連線中...";
+            db.collection("quant_fund").doc("dashboard_data").get().then((doc) => {
+                if (doc.exists) {
+                    fundData = doc.data();
+                    init();
+                } else {
+                    document.getElementById('update-info').innerText = "找不到資料，請確認後端更新狀態。";
+                }
+            }).catch(error => {
+                document.getElementById('update-info').innerText = "資料讀取失敗 (無權限或網路錯誤)。";
+            });
+        }
+
         let mainChart, mddChart, sectorChart, winLossChart;
 
         const lastValueLabelPlugin = {

@@ -29,6 +29,7 @@ jobs:
       - name: Run Update Script
         env:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: python update_daily.py
 
       - name: Commit and Push Changes
