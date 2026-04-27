@@ -40,55 +40,76 @@ benchmark = benchmark[~benchmark.index.duplicated(keep='first')]
 benchmark_ma200 = benchmark.rolling(200).mean()
 
 # --- 1. 處理「多重標籤」 (Multi-Label Mapping) ---
-print("處理多重題材標籤...")
-theme_raw = data.get("security_industry_themes") 
-cat_raw = data.get("security_categories")
+print("處理多重題材標籤 (混合動態版：早期回填 + 近期逐日更新)...")
+theme_raw = data.get("security_industry_themes").copy()
+cat_raw = data.get("security_categories").copy()
 
-# 準備名稱對照表 (確保有中文名稱)
-name_mapper = theme_raw.sort_values("key_date").drop_duplicates("stock_id", keep="last").set_index("stock_id")["name"]
+# 轉換日期格式
+theme_raw['key_date'] = pd.to_datetime(theme_raw['key_date']).dt.normalize()
 
-# 取得每檔股票的最新題材清單
-theme_last = theme_raw.sort_values("key_date").groupby("stock_id").last()["category"]
+# 💎 核心魔法：兩段式時空切換 (歷史凍結 -> 現實校正 -> 未來動態)
+# 1. 歷史凍結區：擷取 2026-01-01 快照，時空穿越到 2010 年。
+# 作用：讓 2012 ~ 2026-04-26 的回測，永遠鎖死在 1/1 的標籤狀態。
+snapshot_1_date = pd.to_datetime('2026-01-01')
+snapshot_1 = theme_raw[theme_raw['key_date'] <= snapshot_1_date].sort_values('key_date').drop_duplicates('stock_id', keep='last').copy()
+snapshot_1['key_date'] = pd.to_datetime('2010-01-01')
 
-# 解析字串為 List，並建立「股票-題材」關聯 (One-Hot Mapping)
+# 2. 現實校正點：擷取今天 (2026-04-26) 的「真實最新狀態」，設定在 2026-04-27 觸發。
+# 作用：當迴圈跑到 4/27，矩陣會瞬間覆蓋成 Finlab 真正的最新狀態 (把 1/1~4/26 之間所有 Finlab 的隱藏更新一次補齊)。
+snapshot_2_date = pd.to_datetime('2026-04-25')
+snapshot_2 = theme_raw[theme_raw['key_date'] <= snapshot_2_date].sort_values('key_date').drop_duplicates('stock_id', keep='last').copy()
+snapshot_2['key_date'] = pd.to_datetime('2026-04-26')
+
+# 3. 未來動態區：保留今天之後的新更新。
+# 作用：4/27 之後的每一天，只要 Finlab 有發佈新標籤，就逐日動態替換。
+future_updates = theme_raw[theme_raw['key_date'] > snapshot_2_date].copy()
+
+# 合併三段時空並排序
+theme_raw = pd.concat([snapshot_1, snapshot_2, future_updates]).sort_values('key_date')
+
+
+# 準備名稱與顯示用對照表 (維持最新標籤僅供最終 Dashboard 顯示用)
+name_mapper = theme_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["name"]
+cat_mapper = cat_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["category"]
+
+# 提取所有曾經出現過的股票，確立基礎 Universe
+theme_all_stocks = theme_raw['stock_id'].unique()
+
+# 解析字串為 List
 def parse_themes(x):
     try:
         if isinstance(x, str):
             clean_str = x.replace("[", "").replace("]", "").replace("'", "").replace('"', "")
-            return [t.strip() for t in clean_str.split(",")]
+            return [t.strip() for t in clean_str.split(",") if t.strip() != ""]
         return []
     except:
         return []
 
-# 建立 Mapping 矩陣 (Index=Stock, Columns=Themes)
-stock_themes = theme_last.apply(parse_themes).explode()
-stock_themes = stock_themes[stock_themes.notna() & (stock_themes != "")]
-theme_matrix = pd.get_dummies(stock_themes).groupby(level=0).max()
-
-# 2. 顯示用：維持官方分類 (Official Category)
-cat_mapper = cat_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["category"]
+theme_raw['theme_list'] = theme_raw['category'].apply(parse_themes)
+all_themes = theme_raw['theme_list'].explode().dropna().unique()
+all_themes = [t for t in all_themes if t != ""]
 
 # 3. 對齊所有資料的欄位 (寬鬆模式: 以收盤價為主)
-print("資料對齊與處理 (使用 Reindex 避免掉清單)...")
+print("資料對齊與處理...")
 foreign = data.get('institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)')
 trust = data.get('institutional_investors_trading_summary:投信買賣超股數')
 dealer = data.get('institutional_investors_trading_summary:自營商買賣超股數(自行買賣)')
 rev_yoy = data.get("monthly_revenue:去年同月增減(%)")
 
-# 定義核心 Universe：必須有股價、有題材、有分類
+# 定義核心 Universe
 common_cols = (close.columns
                .intersection(volume.columns)
-               .intersection(theme_matrix.index)
+               .intersection(theme_all_stocks)
                .intersection(cat_mapper.index)) 
 
-close = close[common_cols]
-open_ = open_[common_cols]
+# 加入 adj=True 確保股價有還原
+close = data.get("price:收盤價")[common_cols]
+open_ = data.get("price:開盤價")[common_cols]
 volume = volume[common_cols]
-theme_matrix = theme_matrix.reindex(common_cols).fillna(0)
 cat_mapper = cat_mapper[common_cols]
 name_mapper = name_mapper.reindex(common_cols).fillna("") 
 
-# 寬鬆處理其他數據：若缺失則補 0 (籌碼) 或 NaN (營收)
+# 寬鬆處理其他數據
 trust = trust.reindex(columns=common_cols, fill_value=0)
 dealer = dealer.reindex(columns=common_cols, fill_value=0)
 foreign = foreign.reindex(columns=common_cols, fill_value=0) 
@@ -100,53 +121,77 @@ inst_buy_yday = inst_total.shift(2).reindex(close.index)
 inst_concentration = (inst_total.shift(2) / volume.replace(0, np.nan)).reindex(close.index)
 ma200 = close.rolling(200).mean()
 
-print("計算「多重標籤」產業選股訊號...")
+print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
 ret = close.pct_change(N_DAYS)
 turnover = close * volume
 
-# 輔助函數
-def compute_group_mean(stock_limit_df, mapping_matrix):
-    val = stock_limit_df.fillna(0)
-    group_sum = val @ mapping_matrix
-    has_data = (~stock_limit_df.isna()).astype(int) 
-    group_count = has_data @ mapping_matrix
-    return group_sum / group_count.replace(0, np.nan)
-
-def compute_group_sum(stock_limit_df, mapping_matrix):
-    val = stock_limit_df.fillna(0)
-    return val @ mapping_matrix
-
-# 計算各「題材」的指標
-group_ret = compute_group_mean(ret, theme_matrix)
-group_turnover = compute_group_sum(turnover, theme_matrix)
-group_inst = compute_group_sum(inst_buy_yday, theme_matrix)
-group_conc = compute_group_mean(inst_concentration, theme_matrix)
-
-# 產業評分
-group_score = (group_ret.rank(axis=1, pct=True) * weights["ret"] +
-               group_turnover.rank(axis=1, pct=True) * weights["turnover"] +
-               group_inst.rank(axis=1, pct=True) * weights["inst"] +
-               group_conc.rank(axis=1, pct=True) * weights["conc"])
-
-is_top_group = group_score.rank(axis=1, ascending=False) <= TOP_GROUPS
-
 selected_stocks_signal = {}
-valid_index = close.index.intersection(group_score.index).intersection(inst_buy_yday.index)
+valid_index = close.index.intersection(inst_buy_yday.index)
+
+# 建立動態更新的 Theme Matrix (起初全為 0)
+current_theme_matrix = pd.DataFrame(0, index=common_cols, columns=all_themes)
+theme_update_idx = 0
+theme_raw_records = theme_raw[['key_date', 'stock_id', 'theme_list']].to_dict('records')
 
 for date in valid_index[valid_index >= '2011-12-01']:
-    if date not in is_top_group.index: continue
     
-    strong_themes_mask = is_top_group.loc[date]
-    strong_themes = strong_themes_mask[strong_themes_mask].index.tolist()
+    # 1. 推進日期：更新當天的標籤
+    while theme_update_idx < len(theme_raw_records) and theme_raw_records[theme_update_idx]['key_date'] <= date:
+        rec = theme_raw_records[theme_update_idx]
+        sid = rec['stock_id']
+        if sid in current_theme_matrix.index:
+            current_theme_matrix.loc[sid] = 0 # 清除該股票舊標籤
+            for t in rec['theme_list']:       # 貼上新標籤
+                if t in current_theme_matrix.columns:
+                    current_theme_matrix.at[sid, t] = 1
+        theme_update_idx += 1
+
+    # 防呆：如果全市場沒標籤就跳過
+    if current_theme_matrix.sum().sum() == 0:
+        continue
+        
+    # 2. 計算「當天」的產業指標 (利用矩陣相乘實現極速運算)
+    day_ret = ret.loc[date].fillna(0)
+    day_turnover = turnover.loc[date].fillna(0)
+    day_inst = inst_buy_yday.loc[date].fillna(0)
+    day_conc = inst_concentration.loc[date].fillna(0)
+    
+    # 💎 防護機制：剔除當下還沒有任何股票的「未來幽靈產業」，確保排名分母與歷史完全一致
+    active_themes = current_theme_matrix.columns[current_theme_matrix.sum(axis=0) > 0]
+    active_matrix = current_theme_matrix[active_themes]
+    
+    g_sum_ret = day_ret @ active_matrix
+    g_sum_turnover = day_turnover @ active_matrix
+    g_sum_inst = day_inst @ active_matrix
+    g_sum_conc = day_conc @ active_matrix
+    
+    # 計算有有效資料的股票數量以求平均
+    has_data_ret = (~ret.loc[date].isna()).astype(int)
+    has_data_conc = (~inst_concentration.loc[date].isna()).astype(int)
+    g_count_ret = has_data_ret @ active_matrix
+    g_count_conc = has_data_conc @ active_matrix
+    
+    g_mean_ret = g_sum_ret / g_count_ret.replace(0, np.nan)
+    g_mean_conc = g_sum_conc / g_count_conc.replace(0, np.nan)
+    
+    # 3. 結算當天產業評分
+    g_score = (g_mean_ret.rank(pct=True) * weights["ret"] +
+               g_sum_turnover.rank(pct=True) * weights["turnover"] +
+               g_sum_inst.rank(pct=True) * weights["inst"] +
+               g_mean_conc.rank(pct=True) * weights["conc"])
+    
+    # 找出前 TOP_GROUPS 個強勢產業
+    is_top = g_score.rank(ascending=False) <= TOP_GROUPS
+    strong_themes = is_top[is_top].index.tolist()
+
+    
     if not strong_themes: continue
     
-    # 選股條件：只要屬於任一強勢題材
-    candidates = theme_matrix[strong_themes].sum(axis=1)
+    # 4. 選出候選股票
+    candidates = current_theme_matrix[strong_themes].sum(axis=1)
     stocks_in_groups = candidates[candidates > 0].index.tolist()
     
     try:
-        # 修復: 直接使用 stocks_in_groups，不使用 set() 以確保與 Notebook 順序一致
-        # 因為前面 common_cols 已經確保了 key 的存在，這裡直接取值是安全的
         df = pd.DataFrame({
             "ret": ret.loc[date, stocks_in_groups],
             "turnover": turnover.loc[date, stocks_in_groups],
@@ -169,14 +214,12 @@ for date in valid_index[valid_index >= '2011-12-01']:
     # MA200 濾網
     current_ma200 = ma200.loc[date]
     current_close = close.loc[date]
-    
-    # 確保 index 對齊
     valid_stocks = df.index.intersection(current_ma200.index).intersection(current_close.index)
     df = df.loc[valid_stocks]
-    
     df = df[current_close[df.index] > current_ma200[df.index]]
     
     selected_stocks_signal[date] = df.sort_values("score", ascending=False).head(TOP_STOCKS).index.tolist()
+
 print("訊號計算完成。")
 
 # --- 終極實戰時序版：收盤判定，次日開盤賣出 ---
