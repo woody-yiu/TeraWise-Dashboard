@@ -593,46 +593,36 @@ try:
                 if f.read().strip() == today_str:
                     already_notified = True
 
-        # 4. 安全時間鎖 (時間濾網)
-        # 為了避免 Finlab 下午 2:30~5:00 正在更新資料導致資料只有一半，
-        # 我們強制規定：必須在台灣時間晚上 6 點 (18:00) 之後，才允許正式發送通知。
-        from datetime import datetime, timezone, timedelta
-        current_tw_hour = datetime.now(timezone(timedelta(hours=8))).hour
-        time_safe = current_tw_hour >= 18 or current_tw_hour < 9 
-
-        # 5. 發送通知 (現在只要有訊號就每天固定發送一次，且必須過晚上 6 點)
+        # 4. 發送通知 (只要有訊號就每天固定發送一次)
         if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
-            if not time_safe:
-                print(f"🕒 資料雖已換日，但目前台灣時間 {current_tw_hour} 點，為確保資料完整，等待晚上 6 點後的排程再發送。")
-            else:
-                msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
+            msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
+            
+            if top5_msgs:
+                msg += "\n🏆 *今日策略前五強:*\n" + "\n".join(top5_msgs) + "\n"
                 
-                if top5_msgs:
-                    msg += "\n🏆 *今日策略前五強:*\n" + "\n".join(top5_msgs) + "\n"
-                    
-                msg += "\n⚡ *明日預計交易異動:*\n"
-                if sell_msgs or buy_msgs:
-                    if sell_msgs:
-                        msg += "🔴 *準備賣出:*\n" + "\n".join(sell_msgs) + "\n"
-                    if buy_msgs:
-                        msg += "\n🟢 *準備買入:*\n" + "\n".join(buy_msgs) + "\n"
-                else:
-                    msg += "✅ 無買賣異動。\n"
-                    
-                url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-                payload = {
-                    "chat_id": tg_chat_id,
-                    "text": msg,
-                    "parse_mode": "Markdown"
-                }
-                res = requests.post(url, json=payload)
-                if res.status_code == 200:
-                    print("✅ Telegram 異動通知發送成功！")
-                    # 寫入記錄檔，確保今天不再重複發送
-                    with open(notify_record_file, "w") as f:
-                        f.write(today_str)
-                else:
-                    print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
+            msg += "\n⚡ *明日預計交易異動:*\n"
+            if sell_msgs or buy_msgs:
+                if sell_msgs:
+                    msg += "🔴 *準備賣出:*\n" + "\n".join(sell_msgs) + "\n"
+                if buy_msgs:
+                    msg += "\n🟢 *準備買入:*\n" + "\n".join(buy_msgs) + "\n"
+            else:
+                msg += "✅ 無買賣異動。\n"
+                
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            payload = {
+                "chat_id": tg_chat_id,
+                "text": msg,
+                "parse_mode": "Markdown"
+            }
+            res = requests.post(url, json=payload)
+            if res.status_code == 200:
+                print("✅ Telegram 異動通知發送成功！")
+                # 寫入記錄檔，確保今天不再重複發送
+                with open(notify_record_file, "w") as f:
+                    f.write(today_str)
+            else:
+                print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
         elif already_notified:
             print("💡 今日已發送過異動通知，為避免打擾跳過發送。")
         else:
