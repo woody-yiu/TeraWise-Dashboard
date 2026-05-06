@@ -38,7 +38,8 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          git add index.html
+          touch .last_notify_date
+          git add index.html .last_notify_date
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else

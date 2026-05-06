@@ -568,8 +568,17 @@ try:
                     buy_msgs.append(f"• {sid} {name}")
                     slots_to_fill -= 1
 
+        # 防呆機制：檢查今天是否已經發過通知
+        notify_record_file = ".last_notify_date"
+        today_str = last_date.strftime('%Y-%m-%d')
+        already_notified = False
+        if os.path.exists(notify_record_file):
+            with open(notify_record_file, "r") as f:
+                if f.read().strip() == today_str:
+                    already_notified = True
+
         # 3. 發送通知
-        if sell_msgs or buy_msgs:
+        if (sell_msgs or buy_msgs) and not already_notified:
             msg = f"📊 *【量化策略異動通知】*\n📅 預計執行日: {tomorrow.strftime('%Y-%m-%d')}\n"
             if sell_msgs:
                 msg += "\n🔴 *準備賣出:*\n" + "\n".join(sell_msgs)
@@ -585,8 +594,13 @@ try:
             res = requests.post(url, json=payload)
             if res.status_code == 200:
                 print("✅ Telegram 異動通知發送成功！")
+                # 寫入記錄檔，確保今天不再重複發送
+                with open(notify_record_file, "w") as f:
+                    f.write(today_str)
             else:
                 print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
+        elif already_notified:
+            print("💡 今日已發送過異動通知，為避免打擾跳過發送。")
         else:
             print("無買賣異動，跳過發送通知。")
     else:
@@ -629,7 +643,10 @@ if not os.environ.get("GITHUB_ACTIONS"):
     repo_dir = current_dir
     try:
         os.chdir(repo_dir)
-        subprocess.run(["git", "add", "index.html", "update_daily.py"], check=True)
+        # 建立檔案以避免 git add 找不到報錯
+        if not os.path.exists(".last_notify_date"):
+            with open(".last_notify_date", "w") as f: pass
+        subprocess.run(["git", "add", "index.html", "update_daily.py", ".last_notify_date"], check=True)
         if subprocess.run(["git", "diff", "--staged", "--quiet"]).returncode != 0:
              subprocess.run(["git", "commit", "-m", f"Dashboard Logic Strict Fix: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
              subprocess.run(["git", "push", "origin", "main"], check=True)
