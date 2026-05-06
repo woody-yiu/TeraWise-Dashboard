@@ -10,6 +10,7 @@ from finlab import login, data
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
+import requests
 
 warnings.filterwarnings('ignore')
 
@@ -521,6 +522,77 @@ dashboard_data = {
     "heatmap": heatmap_data,
     "history": [{ "date": d.strftime("%Y-%m-%d"), "nav": round(v, 2), "benchmark": round(bm_aligned.at[d, bm_col], 2), "mdd": round(m * 100, 2) } for d, v, m in zip(df_nav.index, df_nav['nav'], df_nav['drawdown']) ]
 }
+
+# --- Telegram 異動通知 ---
+print("檢查是否需要發送 Telegram 通知...")
+try:
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    tg_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if tg_token and tg_chat_id:
+        # 1. 整理明天要賣出的名單
+        sell_msgs = []
+        if PENDING_EXITS:
+            for p in PENDING_EXITS:
+                sid = p['stock_id']
+                name = name_mapper.get(sid, str(sid))
+                reason = "停損出場" if p.get('reason') == "Stop Loss" else "時間出場"
+                sell_msgs.append(f"• {sid} {name} ({reason})")
+                
+        # 2. 整理明天準備買入的名單
+        buy_msgs = []
+        last_date = df_nav.index[-1]
+        # 推算下一個營業日 (簡單以日曆日+1表示，此日期僅為顯示與判斷用)
+        tomorrow = last_date + timedelta(days=1) 
+        
+        # 檢查明天是否為建倉日 10-15 號
+        tomorrow_day = tomorrow.day
+        if 10 <= tomorrow_day <= 15:
+            slots_to_fill = PORTFOLIO_SIZE - len(PORTFOLIO)
+            if slots_to_fill > 0:
+                signals = selected_stocks_signal.get(last_date, [])
+                for sid in signals:
+                    if slots_to_fill <= 0: break
+                    if any(p['stock_id'] == sid for p in PORTFOLIO): continue
+                    
+                    # 模擬次日買入的過濾條件
+                    curr_ma = ma200.at[last_date, sid]
+                    curr_close = close.at[last_date, sid]
+                    if pd.isna(curr_ma) or curr_close <= curr_ma: 
+                        continue
+                        
+                    lbd = last_buy_date.get(sid)
+                    if lbd and (close.index.get_loc(last_date) - close.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
+                        continue
+                        
+                    name = name_mapper.get(sid, str(sid))
+                    buy_msgs.append(f"• {sid} {name}")
+                    slots_to_fill -= 1
+
+        # 3. 發送通知
+        if sell_msgs or buy_msgs:
+            msg = f"📊 *【量化策略異動通知】*\n📅 預計執行日: {tomorrow.strftime('%Y-%m-%d')}\n"
+            if sell_msgs:
+                msg += "\n🔴 *準備賣出:*\n" + "\n".join(sell_msgs)
+            if buy_msgs:
+                msg += "\n\n🟢 *準備買入:*\n" + "\n".join(buy_msgs)
+                
+            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+            payload = {
+                "chat_id": tg_chat_id,
+                "text": msg,
+                "parse_mode": "Markdown"
+            }
+            res = requests.post(url, json=payload)
+            if res.status_code == 200:
+                print("✅ Telegram 異動通知發送成功！")
+            else:
+                print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
+        else:
+            print("無買賣異動，跳過發送通知。")
+    else:
+        print("⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，跳過發送通知。")
+except Exception as e:
+    print(f"⚠️ Telegram 執行時發生錯誤: {e}")
 
 # --- Firebase Firestore Upload ---
 print("Uploading data to Firebase Firestore...")

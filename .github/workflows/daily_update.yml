@@ -30,6 +30,8 @@ jobs:
         env:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python update_daily.py
 
       - name: Commit and Push Changes
