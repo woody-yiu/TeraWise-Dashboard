@@ -544,9 +544,17 @@ try:
         # 推算下一個營業日 (簡單以日曆日+1表示，此日期僅為顯示與判斷用)
         tomorrow = last_date + timedelta(days=1) 
         
-        # 檢查明天是否為建倉日 10-15 號
+        # 模擬大盤濾網檢查 (今日大盤收盤是否站上 200MA)
+        market_pass = True
+        if last_date in benchmark.index and last_date in benchmark_ma200.index:
+            bm_today = benchmark.at[last_date, benchmark.columns[0]]
+            bm_ma_today = benchmark_ma200.at[last_date, benchmark_ma200.columns[0]]
+            if pd.notna(bm_today) and pd.notna(bm_ma_today) and bm_today < bm_ma_today: 
+                market_pass = False
+        
+        # 檢查明天是否為建倉日 10-15 號，且大盤在 200MA 之上
         tomorrow_day = tomorrow.day
-        if 10 <= tomorrow_day <= 15:
+        if 10 <= tomorrow_day <= 15 and market_pass:
             slots_to_fill = PORTFOLIO_SIZE - len(PORTFOLIO)
             if slots_to_fill > 0:
                 signals = selected_stocks_signal.get(last_date, [])
