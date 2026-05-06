@@ -576,6 +576,14 @@ try:
                     buy_msgs.append(f"• {sid} {name}")
                     slots_to_fill -= 1
 
+        # 3. 整理今日前五名選股訊號
+        top5_msgs = []
+        signals_today = selected_stocks_signal.get(last_date, [])[:5]
+        for i, sid in enumerate(signals_today):
+            name = name_mapper.get(sid, str(sid))
+            cat = cat_mapper.get(sid, "其他")
+            top5_msgs.append(f"{i+1}. {sid} {name} ({cat})")
+
         # 防呆機制：檢查今天是否已經發過通知
         notify_record_file = ".last_notify_date"
         today_str = last_date.strftime('%Y-%m-%d')
@@ -585,13 +593,21 @@ try:
                 if f.read().strip() == today_str:
                     already_notified = True
 
-        # 3. 發送通知
-        if (sell_msgs or buy_msgs) and not already_notified:
-            msg = f"📊 *【量化策略異動通知】*\n📅 預計執行日: {tomorrow.strftime('%Y-%m-%d')}\n"
-            if sell_msgs:
-                msg += "\n🔴 *準備賣出:*\n" + "\n".join(sell_msgs)
-            if buy_msgs:
-                msg += "\n\n🟢 *準備買入:*\n" + "\n".join(buy_msgs)
+        # 4. 發送通知 (現在只要有訊號就每天固定發送一次)
+        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
+            msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
+            
+            if top5_msgs:
+                msg += "\n🏆 *今日策略前五強:*\n" + "\n".join(top5_msgs) + "\n"
+                
+            msg += "\n⚡ *明日預計交易異動:*\n"
+            if sell_msgs or buy_msgs:
+                if sell_msgs:
+                    msg += "🔴 *準備賣出:*\n" + "\n".join(sell_msgs) + "\n"
+                if buy_msgs:
+                    msg += "\n🟢 *準備買入:*\n" + "\n".join(buy_msgs) + "\n"
+            else:
+                msg += "✅ 無買賣異動。\n"
                 
             url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
             payload = {
