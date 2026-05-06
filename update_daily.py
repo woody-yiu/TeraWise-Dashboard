@@ -593,8 +593,16 @@ try:
                 if f.read().strip() == today_str:
                     already_notified = True
 
-        # 4. 發送通知 (只要有訊號就每天固定發送一次)
-        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
+        # 4. 資料同步對齊鎖：確保大盤指數也已經更新到今天
+        # 因為個股收盤價和大盤指數是不同資料表，更新時間可能有落差
+        # 如果大盤還沒更新，我們就不算、不發送，等下一次排程
+        is_data_fully_synced = True
+        if last_date not in benchmark.index:
+            is_data_fully_synced = False
+            print(f"🕒 個股已更新至 {last_date.strftime('%Y-%m-%d')}，但大盤指數尚未更新。等待大盤同步後再發送通知。")
+
+        # 5. 發送通知 (只要有訊號就每天固定發送一次，且資料必須完全同步)
+        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified and is_data_fully_synced:
             msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
             
             if top5_msgs:
