@@ -117,9 +117,9 @@ foreign = foreign.reindex(columns=common_cols, fill_value=0)
 rev_yoy = rev_yoy.reindex(columns=common_cols)
 rev_yoy = rev_yoy.reindex(close.index, method='ffill')
 
-inst_total = trust + dealer
-inst_buy_yday = inst_total.shift(2).reindex(close.index)
-inst_concentration = (inst_total.shift(2) / volume.replace(0, np.nan)).reindex(close.index)
+inst_total = (trust + dealer).reindex(close.index)
+inst_buy_yday = inst_total.shift(2)
+inst_concentration = inst_total.shift(2) / volume.replace(0, np.nan)
 ma200 = close.rolling(200).mean()
 
 print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
