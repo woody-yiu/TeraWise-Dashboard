@@ -586,14 +586,23 @@ try:
             cat = cat_mapper.get(sid, "其他")
             top5_msgs.append(f"{i+1}. {sid} {name} ({cat})")
 
-        # 防呆機制：檢查今天是否已經發過通知
-        notify_record_file = ".last_notify_date"
+        # 防呆機制：使用 Firebase 檢查今天是否已發過通知 (本機檔案無法跨 GitHub Actions 保留)
+        notify_db = None
         today_str = last_date.strftime('%Y-%m-%d')
         already_notified = False
-        if os.path.exists(notify_record_file):
-            with open(notify_record_file, "r") as f:
-                if f.read().strip() == today_str:
+        try:
+            firebase_cert_tg = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+            if firebase_cert_tg:
+                cert_dict_tg = json.loads(firebase_cert_tg)
+                if not firebase_admin._apps:
+                    cred_tg = credentials.Certificate(cert_dict_tg)
+                    firebase_admin.initialize_app(cred_tg)
+                notify_db = firestore.client()
+                notify_doc = notify_db.collection("quant_fund").document("notify_metadata").get()
+                if notify_doc.exists and notify_doc.to_dict().get("last_notify_date") == today_str:
                     already_notified = True
+        except Exception as e_notify_read:
+            print(f"⚠️ 無法讀取 Firebase 通知記錄: {e_notify_read}")
 
         # 4. 資料同步對齊鎖：確保大盤指數也已經更新到今天
         # 因為個股收盤價和大盤指數是不同資料表，更新時間可能有落差
@@ -628,9 +637,13 @@ try:
             res = requests.post(url, json=payload)
             if res.status_code == 200:
                 print("✅ Telegram 異動通知發送成功！")
-                # 寫入記錄檔，確保今天不再重複發送
-                with open(notify_record_file, "w") as f:
-                    f.write(today_str)
+                # 寫入 Firebase，確保今天所有排程都不再重複發送
+                if notify_db:
+                    try:
+                        notify_db.collection("quant_fund").document("notify_metadata").set({"last_notify_date": today_str})
+                        print(f"✅ Firebase 通知記錄已更新: {today_str}")
+                    except Exception as e_notify_write:
+                        print(f"⚠️ 無法寫入 Firebase 通知記錄: {e_notify_write}")
             else:
                 print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
         elif already_notified:
