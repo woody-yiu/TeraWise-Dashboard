@@ -541,8 +541,10 @@ try:
         # 2. 整理明天準備買入的名單
         buy_msgs = []
         last_date = df_nav.index[-1]
-        # 推算下一個營業日 (簡單以日曆日+1表示，此日期僅為顯示與判斷用)
-        tomorrow = last_date + timedelta(days=1) 
+        # 推算下一個營業日 (跳過週末，確保不會把週六/日當成下一交易日)
+        tomorrow = last_date + timedelta(days=1)
+        while tomorrow.weekday() >= 5:  # 5=Saturday, 6=Sunday
+            tomorrow = tomorrow + timedelta(days=1)
         
         # 模擬大盤濾網檢查 (今日大盤收盤是否站上 200MA)
         market_pass = True
