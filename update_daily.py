@@ -120,7 +120,13 @@ rev_yoy = rev_yoy.reindex(close.index, method='ffill')
 inst_total = (trust + dealer).reindex(close.index)
 inst_buy_yday = inst_total.shift(2)
 inst_concentration = inst_total.shift(2) / volume.replace(0, np.nan)
-ma200 = close.rolling(200).mean()
+# 1. 舊版邏輯 (負責維持 2026-05-12 以前的歷史紀錄完全不變)
+ma200_old = close.rolling(200).mean()
+# 2. 改良版邏輯 (修復國巨等股票減資停牌造成 nan 的問題)
+ma200_new = close.ffill().rolling(200, min_periods=150).mean()
+# 3. 結合兩者：以舊版為基底，只將 5/13 之後的資料替換為改良版
+ma200 = ma200_old.copy()
+ma200.loc[ma200.index >= '2026-05-13'] = ma200_new.loc[ma200_new.index >= '2026-05-13']
 
 print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
 ret = close.pct_change(N_DAYS)
