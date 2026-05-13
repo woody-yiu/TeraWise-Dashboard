@@ -244,11 +244,17 @@ for i, today in enumerate(backtest_dates):
     yesterday = backtest_dates[i-1] if i > 0 else None
     
     # --- [1] 上午開盤：處理昨晚被標記的「待賣出」股票 ---
+    failed_exits = []
     for p in PENDING_EXITS:
         sell_price = open_.at[today, p['stock_id']]
         if pd.isna(sell_price): 
             sell_price = close.at[today, p['stock_id']] # 若無開盤價則以今日收盤代替
             
+        # 防呆：若價格仍為 NaN 則跳過
+        if pd.isna(sell_price):
+            failed_exits.append(p)
+            continue
+
         revenue = sell_price * p['shares']
         fee = revenue * (0.001425 * 0.1 + 0.003) 
         CASH += (revenue - fee)
@@ -258,7 +264,10 @@ for i, today in enumerate(backtest_dates):
             'entry_price': round(p['entry_price'], 2), 'exit_price': round(sell_price, 2),
             'ret': (revenue - fee - p['cost']) / p['cost'], 'exit_reason': p['reason']
         })
+    
     PENDING_EXITS = [] # 執行完畢，清空待賣清單，此時空位才真正釋放
+    if failed_exits:
+        PORTFOLIO.extend(failed_exits)
     
     # --- [2] 上午開盤：進場邏輯 (檢查空位併補貨) ---
     if yesterday is not None:
@@ -289,10 +298,19 @@ for i, today in enumerate(backtest_dates):
                         continue
                     
                     holdings_val = sum(close.at[today, pp['stock_id']] * pp['shares'] if pd.notna(close.at[today, pp['stock_id']]) else pp['entry_price'] * pp['shares'] for pp in PORTFOLIO)
-                    target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
                     
+                    if pd.isna(CASH): CASH = 0
+                    target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
                     entry_price = open_.at[today, sid]
-                    shares = int(target_value / (entry_price * (1 + 0.001425*0.1)))
+                    
+                    # 買入計算防呆
+                    denom = (entry_price * (1 + 0.001425*0.1)) * 1000
+                    if pd.isna(target_value) or pd.isna(denom) or denom == 0:
+                        continue
+
+                    # 計算能買的「張數 (Lots)」
+                    lots = int(target_value / denom)
+                    shares = lots * 1000  # 最終確保一定是 1000 的倍數
                     
                     if shares > 0:
                         cost = entry_price * shares * (1 + 0.001425*0.1)
@@ -382,16 +400,23 @@ if TRADE_LOG:
 # 3. 處理持倉細節
 curr_holdings_data = []
 sector_counter = {}
-if PORTFOLIO:
-    for p in PORTFOLIO:
+all_holdings = PORTFOLIO + PENDING_EXITS
+if all_holdings:
+    for p in all_holdings:
         sid = p['stock_id']
         name = name_mapper.get(sid, sid)
         cat = cat_mapper.get(sid, "其他")
         sector_counter[cat] = sector_counter.get(cat, 0) + 1
         pnl = (last_prices[sid] / p['entry_price'] - 1)
+        
+        days_held = len(backtest_dates) - 1 - p['entry_idx']
+        remaining = FIXED_HOLDING_DAYS - days_held
+        expected_exit = backtest_dates[-1] + pd.tseries.offsets.BusinessDay(remaining)
+        
         curr_holdings_data.append({
             "stock_id": sid, "name": f"{name}", "category": cat,
             "entry_date": p['entry_date'].strftime('%Y-%m-%d'),
+            "expect_exit": expected_exit.strftime('%Y-%m-%d'), 
             "entry_price": round(p['entry_price'], 2), 
             "current_price": round(last_prices[sid], 2),
             "current_date": last_data_date,
