@@ -577,11 +577,16 @@ try:
         while tomorrow.weekday() >= 5:  # 5=Saturday, 6=Sunday
             tomorrow = tomorrow + timedelta(days=1)
         
-        # 模擬大盤濾網檢查 (今日大盤收盤是否站上 200MA)
+        # 取出最新的大盤日期以供判斷
+        latest_bm_date = last_date
+        if last_date not in benchmark.index:
+            latest_bm_date = benchmark.index[-1] if not benchmark.empty else last_date
+
+        # 模擬大盤濾網檢查 (最新大盤收盤是否站上 200MA)
         market_pass = True
-        if last_date in benchmark.index and last_date in benchmark_ma200.index:
-            bm_today = benchmark.at[last_date, benchmark.columns[0]]
-            bm_ma_today = benchmark_ma200.at[last_date, benchmark_ma200.columns[0]]
+        if latest_bm_date in benchmark.index and latest_bm_date in benchmark_ma200.index:
+            bm_today = benchmark.at[latest_bm_date, benchmark.columns[0]]
+            bm_ma_today = benchmark_ma200.at[latest_bm_date, benchmark_ma200.columns[0]]
             if pd.notna(bm_today) and pd.notna(bm_ma_today) and bm_today < bm_ma_today: 
                 market_pass = False
         
@@ -635,16 +640,17 @@ try:
         except Exception as e_notify_read:
             print(f"⚠️ 無法讀取 Firebase 通知記錄: {e_notify_read}")
 
-        # 4. 資料同步對齊鎖：確保大盤指數也已經更新到今天
-        # 因為個股收盤價和大盤指數是不同資料表，更新時間可能有落差
-        # 如果大盤還沒更新，我們就不算、不發送，等下一次排程
+        # 4. 放寬資料同步限制：如果大盤指數尚未更新至今日，則以「最近一個交易日」的大盤狀態為準
+        # 避免因為 Finlab 大盤資料延遲而導致完全發不出通知 (包含停損)
         is_data_fully_synced = True
+        latest_bm_date = last_date
         if last_date not in benchmark.index:
             is_data_fully_synced = False
-            print(f"🕒 個股已更新至 {last_date.strftime('%Y-%m-%d')}，但大盤指數尚未更新。等待大盤同步後再發送通知。")
+            latest_bm_date = benchmark.index[-1] if not benchmark.empty else last_date
+            print(f"🕒 個股已更新至 {last_date.strftime('%Y-%m-%d')}，但大盤指數僅至 {latest_bm_date.strftime('%Y-%m-%d')}。將使用最近一天大盤資料作為參考，並照常發送通知。")
 
-        # 5. 發送通知 (只要有訊號就每天固定發送一次，且資料必須完全同步)
-        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified and is_data_fully_synced:
+        # 5. 發送通知 (放寬限制：只要有異動就發送，不再被 is_data_fully_synced 卡死)
+        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
             msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
             
             if top5_msgs:
