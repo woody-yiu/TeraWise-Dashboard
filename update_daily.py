@@ -560,12 +560,16 @@ try:
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     tg_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if tg_token and tg_chat_id:
+        # HTML 安全字元轉義函數，避免特殊字元 (&, <, >) 導致 Telegram API 報錯
+        def escape_html(text):
+            return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
         # 1. 整理明天要賣出的名單
         sell_msgs = []
         if PENDING_EXITS:
             for p in PENDING_EXITS:
                 sid = p['stock_id']
-                name = name_mapper.get(sid, str(sid))
+                name = escape_html(name_mapper.get(sid, str(sid)))
                 reason = "停損出場" if p.get('reason') == "Stop Loss" else "時間出場"
                 sell_msgs.append(f"• {sid} {name} ({reason})")
                 
@@ -610,7 +614,7 @@ try:
                     if lbd and (close.index.get_loc(last_date) - close.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
                         continue
                         
-                    name = name_mapper.get(sid, str(sid))
+                    name = escape_html(name_mapper.get(sid, str(sid)))
                     buy_msgs.append(f"• {sid} {name}")
                     slots_to_fill -= 1
 
@@ -618,8 +622,8 @@ try:
         top5_msgs = []
         signals_today = selected_stocks_signal.get(last_date, [])[:5]
         for i, sid in enumerate(signals_today):
-            name = name_mapper.get(sid, str(sid))
-            cat = cat_mapper.get(sid, "其他")
+            name = escape_html(name_mapper.get(sid, str(sid)))
+            cat = escape_html(cat_mapper.get(sid, "其他"))
             top5_msgs.append(f"{i+1}. {sid} {name} ({cat})")
 
         # 防呆機制：使用 Firebase 檢查今天是否已發過通知 (本機檔案無法跨 GitHub Actions 保留)
@@ -651,17 +655,17 @@ try:
 
         # 5. 發送通知 (放寬限制：只要有異動就發送，不再被 is_data_fully_synced 卡死)
         if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
-            msg = f"📊 *【量化策略每日報告】*\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
+            msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
             
             if top5_msgs:
-                msg += "\n🏆 *今日策略前五強:*\n" + "\n".join(top5_msgs) + "\n"
+                msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
                 
-            msg += "\n⚡ *明日預計交易異動:*\n"
+            msg += "\n⚡ <b>明日預計交易異動:</b>\n"
             if sell_msgs or buy_msgs:
                 if sell_msgs:
-                    msg += "🔴 *準備賣出:*\n" + "\n".join(sell_msgs) + "\n"
+                    msg += "🔴 <b>準備賣出:</b>\n" + "\n".join(sell_msgs) + "\n"
                 if buy_msgs:
-                    msg += "\n🟢 *準備買入:*\n" + "\n".join(buy_msgs) + "\n"
+                    msg += "\n🟢 <b>準備買入:</b>\n" + "\n".join(buy_msgs) + "\n"
             else:
                 msg += "✅ 無買賣異動。\n"
                 
@@ -669,7 +673,7 @@ try:
             payload = {
                 "chat_id": tg_chat_id,
                 "text": msg,
-                "parse_mode": "Markdown"
+                "parse_mode": "HTML"
             }
             res = requests.post(url, json=payload)
             if res.status_code == 200:
