@@ -309,17 +309,16 @@ for i, today in enumerate(backtest_dates):
                     target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
                     entry_price = open_.at[today, sid]
                     
-                    # 買入計算防呆
-                    denom = (entry_price * (1 + 0.001425*0.1)) * 1000
-                    if pd.isna(target_value) or pd.isna(denom) or denom == 0:
+                    # 買入計算防呆 (開放零股)
+                    cost_per_share = entry_price * (1 + 0.001425 * 0.1)
+                    if pd.isna(target_value) or pd.isna(cost_per_share) or cost_per_share == 0:
                         continue
 
-                    # 計算能買的「張數 (Lots)」
-                    lots = int(target_value / denom)
-                    shares = lots * 1000  # 最終確保一定是 1000 的倍數
+                    # 計算能買的「股數 (Shares)」
+                    shares = int(target_value / cost_per_share)
                     
                     if shares > 0:
-                        cost = entry_price * shares * (1 + 0.001425*0.1)
+                        cost = shares * cost_per_share
                         CASH -= cost
                         PORTFOLIO.append({
                             'stock_id': sid, 'entry_date': today, 'entry_price': entry_price, 
