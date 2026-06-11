@@ -19,6 +19,7 @@ token = os.environ.get("FINLAB_TOKEN", "97Y21Yf07Tokqp6rnUxsQKHbc4j+HosTsqE5DNh2
 login(token)
 
 # 2. Parameters
+TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 20           
@@ -33,8 +34,10 @@ COOLING_OFF_DAYS = 5
 weights = {"ret": 1.5, "turnover": 1.0, "inst": 1.0, "conc": 1.0}
 
 print("正在抓取並對齊資料...")
-close = data.get("price:收盤價")
-open_ = data.get("price:開盤價")
+close_unadj = data.get("price:收盤價")
+open_unadj = data.get("price:開盤價")
+close_adj = data.get("etl:adj_close")
+open_adj = data.get("etl:adj_open")
 volume = data.get("price:成交股數")
 benchmark = data.get('taiex_total_index:收盤指數')
 benchmark = benchmark[~benchmark.index.duplicated(keep='first')]
@@ -98,14 +101,24 @@ dealer = data.get('institutional_investors_trading_summary:自營商買賣超股
 rev_yoy = data.get("monthly_revenue:去年同月增減(%)")
 
 # 定義核心 Universe
-common_cols = (close.columns
+common_cols = (close_adj.columns
                .intersection(volume.columns)
                .intersection(theme_all_stocks)
                .intersection(cat_mapper.index)) 
 
-# 加入 adj=True 確保股價有還原
-close = data.get("price:收盤價")[common_cols]
-open_ = data.get("price:開盤價")[common_cols]
+close_unadj = close_unadj[common_cols]
+open_unadj = open_unadj[common_cols]
+close_adj = close_adj[common_cols]
+open_adj = open_adj[common_cols]
+
+# 選股訊號專用價格 (6/10 前用未還原，6/10 起用還原)
+close_signal = close_unadj.copy()
+close_signal.loc[close_signal.index >= '2026-06-10'] = close_adj.loc[close_adj.index >= '2026-06-10']
+
+# 回測/實戰交易專用價格 (全還原)
+close_trade = close_adj.copy()
+open_trade = open_adj.copy()
+
 volume = volume[common_cols]
 cat_mapper = cat_mapper[common_cols]
 name_mapper = name_mapper.reindex(common_cols).fillna("") 
@@ -115,25 +128,38 @@ trust = trust.reindex(columns=common_cols, fill_value=0)
 dealer = dealer.reindex(columns=common_cols, fill_value=0)
 foreign = foreign.reindex(columns=common_cols, fill_value=0) 
 rev_yoy = rev_yoy.reindex(columns=common_cols)
-rev_yoy = rev_yoy.reindex(close.index, method='ffill')
+rev_yoy = rev_yoy.reindex(close_adj.index, method='ffill')
 
-inst_total = (trust + dealer).reindex(close.index)
+inst_total = (trust + dealer).reindex(close_adj.index)
 inst_buy_yday = inst_total.shift(2)
 inst_concentration = inst_total.shift(2) / volume.replace(0, np.nan)
-# 1. 舊版邏輯 (負責維持 2026-05-12 以前的歷史紀錄完全不變)
-ma200_old = close.rolling(200).mean()
-# 2. 改良版邏輯 (修復國巨等股票減資停牌造成 nan 的問題)
-ma200_new = close.ffill().rolling(200, min_periods=150).mean()
-# 3. 結合兩者：以舊版為基底，只將 5/13 之後的資料替換為改良版
-ma200 = ma200_old.copy()
-ma200.loc[ma200.index >= '2026-05-13'] = ma200_new.loc[ma200_new.index >= '2026-05-13']
+
+# 1. 舊版邏輯 (維持歷史不變，基於未還原價格)
+ma200_old = close_unadj.rolling(200).mean()
+# 2. 改良版邏輯 (修復減資 nan 問題，基於未還原價格)
+ma200_new = close_unadj.ffill().rolling(200, min_periods=150).mean()
+# 3. 結合兩者 (未還原版)
+ma200_unadj_combined = ma200_old.copy()
+ma200_unadj_combined.loc[ma200_unadj_combined.index >= '2026-05-13'] = ma200_new.loc[ma200_new.index >= '2026-05-13']
+
+# 4. 還原價格版的 MA200 (6/10 之後使用)
+ma200_adj_new = close_adj.ffill().rolling(200, min_periods=150).mean()
+
+# 5. 最終選股用 MA200
+ma200 = ma200_unadj_combined.copy()
+ma200.loc[ma200.index >= '2026-06-10'] = ma200_adj_new.loc[ma200_adj_new.index >= '2026-06-10']
 
 print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
-ret = close.pct_change(N_DAYS)
-turnover = close * volume
+ret_unadj = close_unadj.pct_change(N_DAYS)
+ret_adj = close_adj.pct_change(N_DAYS)
+ret = ret_unadj.copy()
+ret.loc[ret.index >= '2026-06-10'] = ret_adj.loc[ret_adj.index >= '2026-06-10']
+
+turnover = close_unadj * volume
+
 
 selected_stocks_signal = {}
-valid_index = close.index.intersection(inst_buy_yday.index)
+valid_index = close_adj.index.intersection(inst_buy_yday.index)
 
 # 建立動態更新的 Theme Matrix (起初全為 0)
 current_theme_matrix = pd.DataFrame(0, index=common_cols, columns=all_themes)
@@ -220,7 +246,7 @@ for date in valid_index[valid_index >= '2011-12-01']:
     
     # MA200 濾網
     current_ma200 = ma200.loc[date]
-    current_close = close.loc[date]
+    current_close = close_signal.loc[date]
     valid_stocks = df.index.intersection(current_ma200.index).intersection(current_close.index)
     df = df.loc[valid_stocks]
     df = df[current_close[df.index] > current_ma200[df.index]]
@@ -240,11 +266,11 @@ TRADE_LOG = []
 NAV_HISTORY = []
 last_buy_date = {}
 
-backtest_dates = close.index.intersection(valid_index)
+backtest_dates = close_trade.index.intersection(valid_index)
 backtest_dates = backtest_dates[backtest_dates >= '2012-01-01']
 
 # Fix: Fill NaNs for valuation purposes
-close_ffill = close.ffill()
+close_ffill = close_trade.ffill()
 
 for i, today in enumerate(backtest_dates):
     yesterday = backtest_dates[i-1] if i > 0 else None
@@ -252,9 +278,9 @@ for i, today in enumerate(backtest_dates):
     # --- [1] 上午開盤：處理昨晚被標記的「待賣出」股票 ---
     failed_exits = []
     for p in PENDING_EXITS:
-        sell_price = open_.at[today, p['stock_id']]
+        sell_price = open_trade.at[today, p['stock_id']]
         if pd.isna(sell_price): 
-            sell_price = close.at[today, p['stock_id']] # 若無開盤價則以今日收盤代替
+            sell_price = close_trade.at[today, p['stock_id']] # 若無開盤價則以今日收盤代替
             
         # 防呆：若價格仍為 NaN 則跳過
         if pd.isna(sell_price):
@@ -292,22 +318,22 @@ for i, today in enumerate(backtest_dates):
                 for sid in signals:
                     if slots_to_fill <= 0: break
                     if any(p['stock_id'] == sid for p in PORTFOLIO): continue
-                    if pd.isna(open_.at[today, sid]): continue
+                    if pd.isna(open_trade.at[today, sid]): continue
                     
                     curr_ma = ma200.at[yesterday, sid]
-                    curr_close = close.at[yesterday, sid]
+                    curr_close = close_signal.at[yesterday, sid]
                     if pd.isna(curr_ma) or curr_close <= curr_ma: 
                         continue
                     
                     lbd = last_buy_date.get(sid)
-                    if lbd and (close.index.get_loc(yesterday) - close.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
+                    if lbd and (close_trade.index.get_loc(yesterday) - close_trade.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
                         continue
                     
-                    holdings_val = sum(close.at[today, pp['stock_id']] * pp['shares'] if pd.notna(close.at[today, pp['stock_id']]) else pp['entry_price'] * pp['shares'] for pp in PORTFOLIO)
+                    holdings_val = sum(close_trade.at[today, pp['stock_id']] * pp['shares'] if pd.notna(close_trade.at[today, pp['stock_id']]) else pp['entry_price'] * pp['shares'] for pp in PORTFOLIO)
                     
                     if pd.isna(CASH): CASH = 0
                     target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
-                    entry_price = open_.at[today, sid]
+                    entry_price = open_trade.at[today, sid]
                     
                     # 買入計算防呆 (開放零股)
                     cost_per_share = entry_price * (1 + 0.001425 * 0.1)
@@ -334,7 +360,7 @@ for i, today in enumerate(backtest_dates):
     
     new_active_portfolio = []
     for p in PORTFOLIO:
-        curr_price = close.at[today, p['stock_id']]
+        curr_price = close_trade.at[today, p['stock_id']]
         exit_reason = None
         if pd.notna(curr_price):
             if curr_price < p['entry_price'] * (1 - STOP_LOSS_PCT): 
@@ -364,7 +390,7 @@ print(f"🚀 啟動 TeraWise 雲端發布流程 [{datetime.now().strftime('%Y-%m
 
 # 1. 基礎指標計算
 last_data_date = df_nav.index[-1].strftime('%Y-%m-%d')
-last_prices = close.iloc[-1]
+last_prices = close_trade.iloc[-1]
 
 daily_ret = df_nav['nav'].pct_change().dropna()
 total_days = (df_nav.index[-1] - df_nav.index[0]).days
@@ -499,7 +525,7 @@ for date, group in monthly_groups:
     m_ret = (group['nav'].iloc[-1] / start_nav - 1) * 100
     prev_nav = group['nav'].iloc[-1]
     test_day = group.index[-1]
-    m_stock_rets = (close.loc[test_day] / close.loc[group.index[0]] - 1)
+    m_stock_rets = (close_trade.loc[test_day] / close_trade.loc[group.index[0]] - 1)
     val_s = m_stock_rets.index.intersection(cat_mapper.keys())
     m_perf = m_stock_rets[val_s].groupby(cat_mapper).median()
     m_major = m_perf[m_perf.index.isin(major_sectors)]
@@ -605,12 +631,12 @@ try:
                     
                     # 模擬次日買入的過濾條件
                     curr_ma = ma200.at[last_date, sid]
-                    curr_close = close.at[last_date, sid]
+                    curr_close = close_signal.at[last_date, sid]
                     if pd.isna(curr_ma) or curr_close <= curr_ma: 
                         continue
                         
                     lbd = last_buy_date.get(sid)
-                    if lbd and (close.index.get_loc(last_date) - close.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
+                    if lbd and (close_trade.index.get_loc(last_date) - close_trade.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
                         continue
                         
                     name = escape_html(name_mapper.get(sid, str(sid)))
@@ -654,38 +680,41 @@ try:
 
         # 5. 發送通知 (放寬限制：只要有異動就發送，不再被 is_data_fully_synced 卡死)
         if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
-            msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
-            
-            if top5_msgs:
-                msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
-                
-            msg += "\n⚡ <b>明日預計交易異動:</b>\n"
-            if sell_msgs or buy_msgs:
-                if sell_msgs:
-                    msg += "🔴 <b>準備賣出:</b>\n" + "\n".join(sell_msgs) + "\n"
-                if buy_msgs:
-                    msg += "\n🟢 <b>準備買入:</b>\n" + "\n".join(buy_msgs) + "\n"
+            if TEST_MODE:
+                print("💡 [測試模式] 有交易異動，但跳過發送 Telegram 通知")
             else:
-                msg += "✅ 無買賣異動。\n"
+                msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
                 
-            url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-            payload = {
-                "chat_id": tg_chat_id,
-                "text": msg,
-                "parse_mode": "HTML"
-            }
-            res = requests.post(url, json=payload)
-            if res.status_code == 200:
-                print("✅ Telegram 異動通知發送成功！")
-                # 寫入 Firebase，確保今天所有排程都不再重複發送
-                if notify_db:
-                    try:
-                        notify_db.collection("quant_fund").document("notify_metadata").set({"last_notify_date": today_str})
-                        print(f"✅ Firebase 通知記錄已更新: {today_str}")
-                    except Exception as e_notify_write:
-                        print(f"⚠️ 無法寫入 Firebase 通知記錄: {e_notify_write}")
-            else:
-                print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
+                if top5_msgs:
+                    msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
+                    
+                msg += "\n⚡ <b>明日預計交易異動:</b>\n"
+                if sell_msgs or buy_msgs:
+                    if sell_msgs:
+                        msg += "🔴 <b>準備賣出:</b>\n" + "\n".join(sell_msgs) + "\n"
+                    if buy_msgs:
+                        msg += "\n🟢 <b>準備買入:</b>\n" + "\n".join(buy_msgs) + "\n"
+                else:
+                    msg += "✅ 無買賣異動。\n"
+                    
+                url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
+                payload = {
+                    "chat_id": tg_chat_id,
+                    "text": msg,
+                    "parse_mode": "HTML"
+                }
+                res = requests.post(url, json=payload)
+                if res.status_code == 200:
+                    print("✅ Telegram 異動通知發送成功！")
+                    # 寫入 Firebase，確保今天所有排程都不再重複發送
+                    if notify_db:
+                        try:
+                            notify_db.collection("quant_fund").document("notify_metadata").set({"last_notify_date": today_str})
+                            print(f"✅ Firebase 通知記錄已更新: {today_str}")
+                        except Exception as e_notify_write:
+                            print(f"⚠️ 無法寫入 Firebase 通知記錄: {e_notify_write}")
+                else:
+                    print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
         elif already_notified:
             print("💡 今日已發送過異動通知，為避免打擾跳過發送。")
         else:
@@ -696,36 +725,68 @@ except Exception as e:
     print(f"⚠️ Telegram 執行時發生錯誤: {e}")
 
 # --- Firebase Firestore Upload ---
-print("Uploading data to Firebase Firestore...")
-try:
-    firebase_cert = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-    if firebase_cert:
-        cert_dict = json.loads(firebase_cert)
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(cert_dict)
-            firebase_admin.initialize_app(cred)
-        
-        db = firestore.client()
-        safe_data = json.loads(json.dumps(dashboard_data)) # Ensure pure python types
-        db.collection("quant_fund").document("dashboard_data").set(safe_data)
-        print("✅ Firebase Firestore update successful.")
-    else:
-        print("⚠️ FIREBASE_SERVICE_ACCOUNT not found. Skipping Firestore update.")
-except Exception as e:
-    print(f"⚠️ Failed to update Firestore: {e}")
+if TEST_MODE:
+    print("💡 [測試模式] 跳過上傳至 Firebase Firestore")
+else:
+    print("Uploading data to Firebase Firestore...")
+    try:
+        firebase_cert = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+        if firebase_cert:
+            cert_dict = json.loads(firebase_cert)
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(cert_dict)
+                firebase_admin.initialize_app(cred)
+            
+            db = firestore.client()
+            safe_data = json.loads(json.dumps(dashboard_data)) # Ensure pure python types
+            db.collection("quant_fund").document("dashboard_data").set(safe_data)
+            print("✅ Firebase Firestore update successful.")
+        else:
+            print("⚠️ FIREBASE_SERVICE_ACCOUNT not found. Skipping Firestore update.")
+    except Exception as e:
+        print(f"⚠️ Failed to update Firestore: {e}")
 
 # 產生純前端 HTML (無需注入靜態資料)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 template_path = os.path.join(current_dir, 'dashboard.html')
 index_path = os.path.join(current_dir, 'index.html')
+offline_path = os.path.join(current_dir, 'index_offline.html')
 
 if os.path.exists(template_path):
     import shutil
     shutil.copyfile(template_path, index_path)
     print("Dashboard HTML copied to index.html (Frontend Firebase managed).")
+    
+    # --- 產生離線版測試網頁 (index_offline.html) ---
+    try:
+        with open(template_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        
+        # 阻擋 Firebase Auth 與連線 (避免產生 SyntaxError)
+        html_content = html_content.replace('auth.onAuthStateChanged(user => {', '/* Offline Bypass */ void(user => {')
+        
+        # 注入本地的 dashboard_data 並直接啟動
+        safe_data_json = json.dumps(json.loads(json.dumps(dashboard_data)), ensure_ascii=False)
+        offline_script = f"""
+        <script>
+            console.log("Offline Mode Enabled");
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('main-dashboard').style.display = 'block';
+            fundData = {safe_data_json};
+            setTimeout(init, 100);
+        </script>
+        </body>
+        """
+        html_content = html_content.replace('</body>', offline_script)
+        
+        with open(offline_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        print("✅ 已產生本地離線測試版網頁: index_offline.html")
+    except Exception as e:
+        print(f"⚠️ 產生離線網頁失敗: {e}")
 
 # GitHub 自動同步
-if not os.environ.get("GITHUB_ACTIONS"):
+if not os.environ.get("GITHUB_ACTIONS") and not TEST_MODE:
     print("📤 [Local Mode] 正在同步全功能數據至雲端...")
     repo_dir = current_dir
     try:
@@ -742,3 +803,5 @@ if not os.environ.get("GITHUB_ACTIONS"):
              print("無變更需要提交。")
     except Exception as e:
         print(f"⚠️ 自動發布失敗: {e}")
+elif TEST_MODE:
+    print("💡 [測試模式] 跳過 GitHub 自動同步")
