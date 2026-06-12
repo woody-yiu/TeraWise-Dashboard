@@ -19,7 +19,7 @@ token = os.environ.get("FINLAB_TOKEN", "97Y21Yf07Tokqp6rnUxsQKHbc4j+HosTsqE5DNh2
 login(token)
 
 # 2. Parameters
-TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
+TEST_MODE = True # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 20           
@@ -282,6 +282,10 @@ for i, today in enumerate(backtest_dates):
         if pd.isna(sell_price): 
             sell_price = close_trade.at[today, p['stock_id']] # 若無開盤價則以今日收盤代替
             
+        sell_price_unadj = open_unadj.at[today, p['stock_id']]
+        if pd.isna(sell_price_unadj):
+            sell_price_unadj = close_unadj.at[today, p['stock_id']]
+
         # 防呆：若價格仍為 NaN 則跳過
         if pd.isna(sell_price):
             failed_exits.append(p)
@@ -291,9 +295,12 @@ for i, today in enumerate(backtest_dates):
         fee = revenue * (0.001425 * 0.1 + 0.003) 
         CASH += (revenue - fee)
         
+        entry_price_unadj = p.get('entry_price_unadj', p['entry_price'])
+        
         TRADE_LOG.append({
             'stock_id': p['stock_id'], 'entry_date': p['entry_date'], 'exit_date': today,
             'entry_price': round(p['entry_price'], 2), 'exit_price': round(sell_price, 2),
+            'entry_price_unadj': round(entry_price_unadj, 2), 'exit_price_unadj': round(sell_price_unadj, 2),
             'ret': (revenue - fee - p['cost']) / p['cost'], 'exit_reason': p['reason']
         })
     
@@ -335,6 +342,10 @@ for i, today in enumerate(backtest_dates):
                     target_value = min((CASH + holdings_val) / PORTFOLIO_SIZE, CASH * 0.98)
                     entry_price = open_trade.at[today, sid]
                     
+                    entry_price_unadj = open_unadj.at[today, sid]
+                    if pd.isna(entry_price_unadj):
+                        entry_price_unadj = close_unadj.at[today, sid]
+                    
                     # 買入計算防呆 (開放零股)
                     cost_per_share = entry_price * (1 + 0.001425 * 0.1)
                     if pd.isna(target_value) or pd.isna(cost_per_share) or cost_per_share == 0:
@@ -348,6 +359,7 @@ for i, today in enumerate(backtest_dates):
                         CASH -= cost
                         PORTFOLIO.append({
                             'stock_id': sid, 'entry_date': today, 'entry_price': entry_price, 
+                            'entry_price_unadj': entry_price_unadj,
                             'shares': shares, 'cost': cost, 'entry_idx': i
                         })
                         last_buy_date[sid] = today
@@ -391,6 +403,7 @@ print(f"🚀 啟動 TeraWise 雲端發布流程 [{datetime.now().strftime('%Y-%m
 # 1. 基礎指標計算
 last_data_date = df_nav.index[-1].strftime('%Y-%m-%d')
 last_prices = close_trade.iloc[-1]
+last_prices_unadj = close_unadj.iloc[-1]
 
 daily_ret = df_nav['nav'].pct_change().dropna()
 total_days = (df_nav.index[-1] - df_nav.index[0]).days
@@ -448,8 +461,8 @@ if all_holdings:
             "stock_id": sid, "name": f"{name}", "category": cat,
             "entry_date": p['entry_date'].strftime('%Y-%m-%d'),
             "expect_exit": expected_exit.strftime('%Y-%m-%d'), 
-            "entry_price": round(p['entry_price'], 2), 
-            "current_price": round(last_prices[sid], 2),
+            "entry_price": round(p.get('entry_price_unadj', p['entry_price']), 2), 
+            "current_price": round(last_prices_unadj[sid], 2),
             "current_date": last_data_date,
             "pnl": round(pnl * 100, 2)
         })
@@ -477,16 +490,16 @@ if TRADE_LOG:
         recent_ops.append({
             "date": t['exit_date'].strftime('%Y-%m-%d'), "action": "賣出",
             "stock_id": t['stock_id'], "name": f"{name}",
-            "price": round(t['exit_price'], 2), "reason": t['exit_reason'],
+            "price": round(t.get('exit_price_unadj', t['exit_price']), 2), "reason": t['exit_reason'],
             "pnl": round(t['ret'] * 100, 2),
-            "entry_info": f"({t['entry_date'].strftime('%m/%d')} 以 {round(t['entry_price'], 2)} 買入)"
+            "entry_info": f"({t['entry_date'].strftime('%m/%d')} 以 {round(t.get('entry_price_unadj', t['entry_price']), 2)} 買入)"
         })
         key = (t['stock_id'], t['entry_date'])
         if key not in seen_buys:
             recent_ops.append({
                 "date": t['entry_date'].strftime('%Y-%m-%d'), "action": "買入",
                 "stock_id": t['stock_id'], "name": f"{name}",
-                "price": round(t['entry_price'], 2), "reason": "訊號進場",
+                "price": round(t.get('entry_price_unadj', t['entry_price']), 2), "reason": "訊號進場",
                 "pnl": "-", "entry_info": ""
             })
             seen_buys.add(key)
@@ -498,7 +511,7 @@ if PORTFOLIO:
             recent_ops.append({
                 "date": p['entry_date'].strftime('%Y-%m-%d'), "action": "買入",
                 "stock_id": p['stock_id'], "name": f"{name}",
-                "price": round(p['entry_price'], 2), "reason": "訊號進場",
+                "price": round(p.get('entry_price_unadj', p['entry_price']), 2), "reason": "訊號進場",
                 "pnl": "-", "entry_info": ""
             })
             seen_buys.add(key)
@@ -548,8 +561,8 @@ if TRADE_LOG:
         historical_trades.append({
             "stock_id": t['stock_id'], "name": f"{name}",
             "category": cat_mapper.get(t['stock_id'], "其他"), "entry_date": t['entry_date'].strftime('%Y-%m-%d'),
-            "exit_date": t['exit_date'].strftime('%Y-%m-%d'), "entry_price": round(t['entry_price'], 2),
-            "exit_price": round(t['exit_price'], 2), "ret": round(t['ret'], 4), "exit_reason": t['exit_reason']
+            "exit_date": t['exit_date'].strftime('%Y-%m-%d'), "entry_price": round(t.get('entry_price_unadj', t['entry_price']), 2),
+            "exit_price": round(t.get('exit_price_unadj', t['exit_price']), 2), "ret": round(t['ret'], 4), "exit_reason": t['exit_reason']
         })
 
 # 8. 建構封包並發布
