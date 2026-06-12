@@ -19,7 +19,7 @@ token = os.environ.get("FINLAB_TOKEN", "97Y21Yf07Tokqp6rnUxsQKHbc4j+HosTsqE5DNh2
 login(token)
 
 # 2. Parameters
-TEST_MODE = True # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
+TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 20           
