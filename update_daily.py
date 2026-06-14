@@ -128,7 +128,7 @@ trust = trust.reindex(columns=common_cols, fill_value=0)
 dealer = dealer.reindex(columns=common_cols, fill_value=0)
 foreign = foreign.reindex(columns=common_cols, fill_value=0) 
 rev_yoy = rev_yoy.reindex(columns=common_cols)
-rev_yoy = rev_yoy.reindex(close_adj.index, method='ffill')
+rev_yoy = rev_yoy.ffill(limit=3).reindex(close_adj.index, method='ffill')
 
 inst_total = (trust + dealer).reindex(close_adj.index)
 inst_buy_yday = inst_total.shift(2)
