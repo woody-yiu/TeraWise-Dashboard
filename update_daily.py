@@ -837,7 +837,7 @@ if not os.environ.get("GITHUB_ACTIONS") and not TEST_MODE:
         # 建立檔案以避免 git add 找不到報錯
         if not os.path.exists(".last_notify_date"):
             with open(".last_notify_date", "w") as f: pass
-        subprocess.run(["git", "add", "index.html", "update_daily.py", ".last_notify_date"], check=True)
+        subprocess.run(["git", "add", "index.html", "update_daily.py", ".last_notify_date", "historical_signals.json"], check=True)
         if subprocess.run(["git", "diff", "--staged", "--quiet"]).returncode != 0:
              subprocess.run(["git", "commit", "-m", f"Dashboard Logic Strict Fix: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
              subprocess.run(["git", "push", "origin", "main"], check=True)
