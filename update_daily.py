@@ -20,6 +20,7 @@ login(token)
 
 # 2. Parameters
 TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
+FORCE_RECALCULATE = False # 設為 True 時，將忽略快取，重新計算所有歷史訊號（更改策略參數時請設為 True）
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 20           
@@ -158,7 +159,21 @@ ret.loc[ret.index >= '2026-06-10'] = ret_adj.loc[ret_adj.index >= '2026-06-10']
 turnover = close_unadj * volume
 
 
+SIGNAL_CACHE_FILE = 'historical_signals.json'
 selected_stocks_signal = {}
+
+# 1. 嘗試載入歷史選股快取
+if os.path.exists(SIGNAL_CACHE_FILE) and not FORCE_RECALCULATE:
+    try:
+        with open(SIGNAL_CACHE_FILE, 'r', encoding='utf-8') as f:
+            cached_data = json.load(f)
+            for date_str, stocks in cached_data.items():
+                selected_stocks_signal[pd.Timestamp(date_str)] = stocks
+        print(f"📦 成功載入歷史選股快取，共 {len(selected_stocks_signal)} 筆。")
+    except Exception as e:
+        print(f"⚠️ 載入快取失敗，將重新計算: {e}")
+        selected_stocks_signal = {}
+
 valid_index = close_adj.index.intersection(inst_buy_yday.index)
 
 # 建立動態更新的 Theme Matrix (起初全為 0)
@@ -166,9 +181,11 @@ current_theme_matrix = pd.DataFrame(0, index=common_cols, columns=all_themes)
 theme_update_idx = 0
 theme_raw_records = theme_raw[['key_date', 'stock_id', 'theme_list']].to_dict('records')
 
+new_signals_calculated = False
+
 for date in valid_index[valid_index >= '2011-12-01']:
     
-    # 1. 推進日期：更新當天的標籤
+    # 1. 推進日期：更新當天的標籤 (即使有快取也需推進，維持矩陣狀態正確)
     while theme_update_idx < len(theme_raw_records) and theme_raw_records[theme_update_idx]['key_date'] <= date:
         rec = theme_raw_records[theme_update_idx]
         sid = rec['stock_id']
@@ -178,6 +195,12 @@ for date in valid_index[valid_index >= '2011-12-01']:
                 if t in current_theme_matrix.columns:
                     current_theme_matrix.at[sid, t] = 1
         theme_update_idx += 1
+
+    # 如果這天的訊號已經在快取裡，就跳過耗時的指標計算
+    if date in selected_stocks_signal:
+        continue
+        
+    new_signals_calculated = True
 
     # 防呆：如果全市場沒標籤就跳過
     if current_theme_matrix.sum().sum() == 0:
@@ -252,6 +275,13 @@ for date in valid_index[valid_index >= '2011-12-01']:
     df = df[current_close[df.index] > current_ma200[df.index]]
     
     selected_stocks_signal[date] = df.sort_values("score", ascending=False).head(TOP_STOCKS).index.tolist()
+
+# 儲存新的選股結果到快取
+if new_signals_calculated:
+    print("💾 儲存更新後的選股結果至快取檔案...")
+    save_data = {d.strftime('%Y-%m-%d'): stocks for d, stocks in selected_stocks_signal.items()}
+    with open(SIGNAL_CACHE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(save_data, f, ensure_ascii=False, indent=2)
 
 print("訊號計算完成。")
 
