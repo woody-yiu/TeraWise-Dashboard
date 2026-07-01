@@ -143,12 +143,16 @@ ma200_new = close_unadj.ffill().rolling(200, min_periods=150).mean()
 ma200_unadj_combined = ma200_old.copy()
 ma200_unadj_combined.loc[ma200_unadj_combined.index >= '2026-05-13'] = ma200_new.loc[ma200_new.index >= '2026-05-13']
 
-# 4. 還原價格版的 MA200 (6/10 之後使用)
+# 4. 還原價格版的 MA200 (6/10 至 6/30 使用)
 ma200_adj_new = close_adj.ffill().rolling(200, min_periods=150).mean()
 
-# 5. 最終選股用 MA200
+# 5. 還原價格版的 MA120 (7/1 之後使用)
+ma120_adj_new = close_adj.ffill().rolling(120, min_periods=90).mean()
+
+# 6. 最終選股用 MA 濾網 (7/1 起儲存的是 120MA 值)
 ma200 = ma200_unadj_combined.copy()
-ma200.loc[ma200.index >= '2026-06-10'] = ma200_adj_new.loc[ma200_adj_new.index >= '2026-06-10']
+ma200.loc[(ma200.index >= '2026-06-10') & (ma200.index < '2026-07-01')] = ma200_adj_new.loc[(ma200_adj_new.index >= '2026-06-10') & (ma200_adj_new.index < '2026-07-01')]
+ma200.loc[ma200.index >= '2026-07-01'] = ma120_adj_new.loc[ma120_adj_new.index >= '2026-07-01']
 
 print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
 ret_unadj = close_unadj.pct_change(N_DAYS)
