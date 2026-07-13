@@ -161,6 +161,11 @@ ret = ret_unadj.copy()
 ret.loc[ret.index >= '2026-06-10'] = ret_adj.loc[ret_adj.index >= '2026-06-10']
 
 turnover = close_unadj * volume
+turnover_ma5 = turnover.rolling(5).mean()  # 5日均量成交額（新版流動性濾網用）
+
+# 新版流動性濾網切換日期 (此日期之前沿用舊版邏輯，此日期起套用新版)
+LIQ_UPGRADE_DATE = pd.Timestamp('2026-07-09')
+MIN_TURNOVER_TWD = 250_000_000  # 新版絕對門檻：單日均量 2.5 億
 
 
 SIGNAL_CACHE_FILE = 'historical_signals.json'
@@ -255,6 +260,7 @@ for date in valid_index[valid_index >= '2011-12-01']:
         df = pd.DataFrame({
             "ret": ret.loc[date, stocks_in_groups],
             "turnover": turnover.loc[date, stocks_in_groups],
+            "turnover_ma5": turnover_ma5.loc[date, stocks_in_groups],  # 新增：5日均量
             "inst": inst_buy_yday.loc[date, stocks_in_groups],
             "conc": inst_concentration.loc[date, stocks_in_groups],
             "yoy": rev_yoy.loc[date, stocks_in_groups]
@@ -262,8 +268,19 @@ for date in valid_index[valid_index >= '2011-12-01']:
     except: continue
     
     if df.empty: continue
-    liq_cut = df["turnover"].quantile(1 - MIN_LIQ_PCT)
-    df = df[(df["turnover"] >= liq_cut) & (df["inst"] > 0) & (df["conc"] > 0) & (df["yoy"] > 0)]
+
+    # ── 流動性濾網：7/9 前用舊版，7/9 起用新版 ──────────────────────────
+    if date >= LIQ_UPGRADE_DATE:
+        # 新版：用 5 日均量做相對門檻（前 60%）+ 絕對門檻 2.5 億
+        liq_cut = df["turnover_ma5"].quantile(1 - MIN_LIQ_PCT)
+        df = df[(df["turnover_ma5"] >= liq_cut) &
+                (df["turnover_ma5"] >= MIN_TURNOVER_TWD) &
+                (df["inst"] > 0) & (df["conc"] > 0) & (df["yoy"] > 0)]
+    else:
+        # 舊版：用單日成交額做相對門檻（前 60%）
+        liq_cut = df["turnover"].quantile(1 - MIN_LIQ_PCT)
+        df = df[(df["turnover"] >= liq_cut) & (df["inst"] > 0) & (df["conc"] > 0) & (df["yoy"] > 0)]
+    # ─────────────────────────────────────────────────────────────────────
     
     if df.empty: continue
     df["score"] = (df["ret"].rank(pct=True) * weights["ret"] +
