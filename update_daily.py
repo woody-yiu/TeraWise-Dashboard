@@ -25,7 +25,51 @@ N_DAYS = 5
 MIN_LIQ_PCT = 0.6
 TOP_GROUPS = 20           
 TOP_STOCKS = 50           
-PORTFOLIO_SIZE = 15       
+PORTFOLIO_SIZE = 15
+
+# 2026-08-07 起改為每月 10-15 日之間的交易日分批進場；此前交易邏輯維持不變。
+STAGGERED_ENTRY_START_DATE = pd.Timestamp('2026-08-07')
+
+
+def build_window_buy_quota(trading_dates, portfolio_size=PORTFOLIO_SIZE):
+    """將每月 10-15 日間的實際交易日平均分配建倉檔數。"""
+    dates = pd.DatetimeIndex(trading_dates).normalize().sort_values().unique()
+    quotas = {}
+    date_series = pd.Series(dates, index=dates)
+
+    for (_, _), month_dates in date_series.groupby(
+        [date_series.index.year, date_series.index.month]
+    ):
+        eligible_dates = [d for d in month_dates.tolist() if 10 <= d.day <= 15]
+        if not eligible_dates:
+            continue
+
+        base_quota, remainder = divmod(portfolio_size, len(eligible_dates))
+        for position, entry_date in enumerate(eligible_dates):
+            quotas[pd.Timestamp(entry_date).normalize()] = (
+                base_quota + (1 if position < remainder else 0)
+            )
+
+    return quotas
+
+
+def get_entry_quota(entry_date, exact_quotas=None, portfolio_size=PORTFOLIO_SIZE):
+    """取得單日分批額度；未來日期尚無行情時，以週一至週五估算。"""
+    entry_date = pd.Timestamp(entry_date).normalize()
+    if entry_date < STAGGERED_ENTRY_START_DATE or not 10 <= entry_date.day <= 15:
+        return 0
+    if exact_quotas is not None and entry_date in exact_quotas:
+        return int(exact_quotas[entry_date])
+
+    estimated_dates = list(pd.bdate_range(
+        entry_date.replace(day=10), entry_date.replace(day=15)
+    ))
+    if entry_date not in estimated_dates:
+        return 0
+
+    base_quota, remainder = divmod(portfolio_size, len(estimated_dates))
+    position = estimated_dates.index(entry_date)
+    return base_quota + (1 if position < remainder else 0)
 
 STOP_LOSS_PCT = 0.10
 FIXED_HOLDING_DAYS = 40
@@ -320,6 +364,18 @@ last_buy_date = {}
 backtest_dates = close_trade.index.intersection(valid_index)
 backtest_dates = backtest_dates[backtest_dates >= '2012-01-01']
 
+# 當月窗口尚未走完時，行情索引沒有未來日期；先以平日補齊，避免首日誤配全部額度。
+quota_trading_dates = backtest_dates
+if len(backtest_dates) > 0:
+    latest_trade_date = pd.Timestamp(backtest_dates[-1]).normalize()
+    current_window_end = latest_trade_date.replace(day=15)
+    if latest_trade_date < current_window_end:
+        estimated_remaining_dates = pd.bdate_range(
+            latest_trade_date.replace(day=10), current_window_end
+        )
+        quota_trading_dates = backtest_dates.union(estimated_remaining_dates)
+window_buy_quota = build_window_buy_quota(quota_trading_dates)
+
 # Fix: Fill NaNs for valuation purposes
 close_ffill = close_trade.ffill()
 
@@ -368,9 +424,17 @@ for i, today in enumerate(backtest_dates):
             market_pass = False
         
         is_entry_window = 10 <= today.day <= 15
-                
+
         if market_pass and is_entry_window:
-            slots_to_fill = PORTFOLIO_SIZE - len(PORTFOLIO)
+            available_slots = PORTFOLIO_SIZE - len(PORTFOLIO)
+            if today >= STAGGERED_ENTRY_START_DATE:
+                daily_buy_quota = window_buy_quota.get(
+                    pd.Timestamp(today).normalize(), 0
+                )
+                slots_to_fill = min(available_slots, daily_buy_quota)
+            else:
+                # 切換日前保留原本一次補滿的規則，避免改寫過去交易紀錄。
+                slots_to_fill = available_slots
             if slots_to_fill > 0:
                 signals = selected_stocks_signal.get(yesterday, [])
                 for sid in signals:
@@ -686,7 +750,13 @@ try:
         # 檢查明天是否為建倉日 10-15 號，且大盤在 200MA 之上
         tomorrow_day = tomorrow.day
         if 10 <= tomorrow_day <= 15 and market_pass:
-            slots_to_fill = PORTFOLIO_SIZE - len(PORTFOLIO)
+            available_slots = PORTFOLIO_SIZE - len(PORTFOLIO)
+            if tomorrow >= STAGGERED_ENTRY_START_DATE:
+                tomorrow_buy_quota = get_entry_quota(tomorrow, window_buy_quota)
+                slots_to_fill = min(available_slots, tomorrow_buy_quota)
+            else:
+                tomorrow_buy_quota = available_slots
+                slots_to_fill = available_slots
             if slots_to_fill > 0:
                 signals = selected_stocks_signal.get(last_date, [])
                 for sid in signals:
@@ -757,7 +827,11 @@ try:
                     if sell_msgs:
                         msg += "🔴 <b>準備賣出:</b>\n" + "\n".join(sell_msgs) + "\n"
                     if buy_msgs:
-                        msg += "\n🟢 <b>準備買入:</b>\n" + "\n".join(buy_msgs) + "\n"
+                        msg += (
+                            f"\n🟢 <b>準備買入（明日分批配額上限 "
+                            f"{tomorrow_buy_quota} 檔）:</b>\n"
+                            + "\n".join(buy_msgs) + "\n"
+                        )
                 else:
                     msg += "✅ 無買賣異動。\n"
                     
