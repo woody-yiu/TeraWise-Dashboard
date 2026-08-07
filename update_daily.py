@@ -29,6 +29,79 @@ PORTFOLIO_SIZE = 15
 
 # 2026-08-07 起改為每月 10-15 日之間的交易日分批進場；此前交易邏輯維持不變。
 STAGGERED_ENTRY_START_DATE = pd.Timestamp('2026-08-07')
+TWSE_HOLIDAY_API = 'https://www.twse.com.tw/holidaySchedule/holidaySchedule'
+TWSE_HOLIDAY_FALLBACK = {
+    2026: {
+        '2026-01-01',
+        '2026-02-12', '2026-02-13', '2026-02-16', '2026-02-17',
+        '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-27',
+        '2026-04-03', '2026-04-06', '2026-05-01', '2026-06-19',
+        '2026-09-25', '2026-09-28', '2026-10-09', '2026-10-26',
+        '2026-12-25',
+    }
+}
+_twse_holiday_cache = {}
+
+
+def get_twse_holidays(year):
+    """讀取證交所年度休市日；官方 API 失敗時使用內建備援。"""
+    year = int(year)
+    if year in _twse_holiday_cache:
+        return _twse_holiday_cache[year]
+
+    holidays = {
+        pd.Timestamp(date_str).normalize()
+        for date_str in TWSE_HOLIDAY_FALLBACK.get(year, set())
+    }
+    try:
+        response = requests.get(
+            TWSE_HOLIDAY_API,
+            params={'response': 'json', 'queryYear': year},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get('stat') != 'ok':
+            raise ValueError(f"TWSE API stat={payload.get('stat')}")
+
+        official_holidays = set()
+        for row in payload.get('data', []):
+            if len(row) < 2:
+                continue
+            date = pd.Timestamp(row[0]).normalize()
+            name = str(row[1])
+            # 「開始交易日」與「最後交易日」是說明性公告，當天仍有交易。
+            if '開始交易日' in name or '最後交易日' in name:
+                continue
+            if date.weekday() < 5:
+                official_holidays.add(date)
+
+        if official_holidays:
+            holidays = official_holidays
+        print(f"已載入證交所 {year} 年休市日，共 {len(holidays)} 日。")
+    except Exception as holiday_error:
+        fallback_note = '使用內建備援' if holidays else '退回週一至週五估算'
+        print(f"無法載入證交所 {year} 年休市日，{fallback_note}: {holiday_error}")
+
+    _twse_holiday_cache[year] = holidays
+    return holidays
+
+
+def estimated_twse_trading_days(start_date, end_date):
+    """以平日為基礎，排除證交所已公告休市日。"""
+    dates = pd.bdate_range(start_date, end_date)
+    holidays = set()
+    for year in range(pd.Timestamp(start_date).year, pd.Timestamp(end_date).year + 1):
+        holidays.update(get_twse_holidays(year))
+    return pd.DatetimeIndex([date for date in dates if date.normalize() not in holidays])
+
+
+def next_estimated_twse_trading_day(date):
+    """取得指定日期後第一個非週末、非已公告休市的日期。"""
+    candidate = pd.Timestamp(date).normalize() + timedelta(days=1)
+    while candidate.weekday() >= 5 or candidate in get_twse_holidays(candidate.year):
+        candidate += timedelta(days=1)
+    return candidate
 
 
 def build_window_buy_quota(trading_dates, portfolio_size=PORTFOLIO_SIZE):
@@ -61,7 +134,7 @@ def get_entry_quota(entry_date, exact_quotas=None, portfolio_size=PORTFOLIO_SIZE
     if exact_quotas is not None and entry_date in exact_quotas:
         return int(exact_quotas[entry_date])
 
-    estimated_dates = list(pd.bdate_range(
+    estimated_dates = list(estimated_twse_trading_days(
         entry_date.replace(day=10), entry_date.replace(day=15)
     ))
     if entry_date not in estimated_dates:
@@ -370,7 +443,7 @@ if len(backtest_dates) > 0:
     latest_trade_date = pd.Timestamp(backtest_dates[-1]).normalize()
     current_window_end = latest_trade_date.replace(day=15)
     if latest_trade_date < current_window_end:
-        estimated_remaining_dates = pd.bdate_range(
+        estimated_remaining_dates = estimated_twse_trading_days(
             latest_trade_date.replace(day=10), current_window_end
         )
         quota_trading_dates = backtest_dates.union(estimated_remaining_dates)
@@ -729,10 +802,8 @@ try:
         # 2. 整理明天準備買入的名單
         buy_msgs = []
         last_date = df_nav.index[-1]
-        # 推算下一個營業日 (跳過週末，確保不會把週六/日當成下一交易日)
-        tomorrow = last_date + timedelta(days=1)
-        while tomorrow.weekday() >= 5:  # 5=Saturday, 6=Sunday
-            tomorrow = tomorrow + timedelta(days=1)
+        # 推算下一個交易日（跳過週末與證交所已公告休市日）
+        tomorrow = next_estimated_twse_trading_day(last_date)
         
         # 取出最新的大盤日期以供判斷
         latest_bm_date = last_date
