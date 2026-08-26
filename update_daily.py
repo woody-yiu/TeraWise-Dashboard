@@ -41,6 +41,39 @@ TWSE_HOLIDAY_FALLBACK = {
     }
 }
 _twse_holiday_cache = {}
+NOTIFY_DATE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '.last_notify_date'
+)
+
+
+def read_last_notify_date():
+    """讀取可跨 GitHub Actions 執行保留的 Telegram 通知日期。"""
+    try:
+        if not os.path.exists(NOTIFY_DATE_FILE):
+            return None
+        with open(NOTIFY_DATE_FILE, 'r', encoding='utf-8') as notify_file:
+            return notify_file.read().strip() or None
+    except Exception as notify_file_error:
+        print(f"⚠️ 無法讀取本地通知記錄: {notify_file_error}")
+        return None
+
+
+def write_last_notify_date(date_str):
+    """以原子替換方式更新通知日期，避免留下只寫一半的鎖檔。"""
+    temp_path = f"{NOTIFY_DATE_FILE}.tmp"
+    try:
+        with open(temp_path, 'w', encoding='utf-8') as notify_file:
+            notify_file.write(date_str or '')
+        os.replace(temp_path, NOTIFY_DATE_FILE)
+        return True
+    except Exception as notify_file_error:
+        print(f"⚠️ 無法寫入本地通知記錄: {notify_file_error}")
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        return False
 
 
 def get_twse_holidays(year):
@@ -856,10 +889,14 @@ try:
             cat = escape_html(cat_mapper.get(sid, "其他"))
             top5_msgs.append(f"{i+1}. {sid} {name} ({cat})")
 
-        # 防呆機制：使用 Firebase 檢查今天是否已發過通知 (本機檔案無法跨 GitHub Actions 保留)
+        # 雙重防呆：版本庫日期檔為主要備援，Firebase 為跨環境同步鎖。
+        # GitHub Actions 會在每次成功執行後提交日期檔，因此 Firebase 暫時異常時也不會重複發送。
         notify_db = None
         today_str = last_date.strftime('%Y-%m-%d')
-        already_notified = False
+        local_notify_date = read_last_notify_date()
+        already_notified = local_notify_date == today_str
+        if already_notified:
+            print(f"💡 本地通知記錄顯示 {today_str} 已發送。")
         try:
             firebase_cert_tg = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
             if firebase_cert_tg:
@@ -868,11 +905,23 @@ try:
                     cred_tg = credentials.Certificate(cert_dict_tg)
                     firebase_admin.initialize_app(cred_tg)
                 notify_db = firestore.client()
-                notify_doc = notify_db.collection("quant_fund").document("notify_metadata").get()
-                if notify_doc.exists and notify_doc.to_dict().get("last_notify_date") == today_str:
+                notify_ref = notify_db.collection("quant_fund").document("notify_metadata")
+                notify_doc = notify_ref.get()
+                firebase_notify_date = (
+                    notify_doc.to_dict().get("last_notify_date")
+                    if notify_doc.exists else None
+                )
+                if firebase_notify_date == today_str:
                     already_notified = True
+                    print(f"💡 Firebase 通知記錄顯示 {today_str} 已發送。")
+                    if local_notify_date != today_str and write_last_notify_date(today_str):
+                        local_notify_date = today_str
+                        print(f"✅ 已同步本地通知記錄: {today_str}")
+                elif already_notified:
+                    notify_ref.set({"last_notify_date": today_str}, merge=True)
+                    print(f"✅ 已同步 Firebase 通知記錄: {today_str}")
         except Exception as e_notify_read:
-            print(f"⚠️ 無法讀取 Firebase 通知記錄: {e_notify_read}")
+            print(f"⚠️ 無法讀取 Firebase 通知記錄，改用本地通知記錄判斷: {e_notify_read}")
 
         # 4. 放寬資料同步限制：如果大盤指數尚未更新至今日，則以「最近一個交易日」的大盤狀態為準
         # 避免因為 Finlab 大盤資料延遲而導致完全發不出通知 (包含停損)
@@ -912,18 +961,34 @@ try:
                     "text": msg,
                     "parse_mode": "HTML"
                 }
-                res = requests.post(url, json=payload)
-                if res.status_code == 200:
-                    print("✅ Telegram 異動通知發送成功！")
-                    # 寫入 Firebase，確保今天所有排程都不再重複發送
-                    if notify_db:
-                        try:
-                            notify_db.collection("quant_fund").document("notify_metadata").set({"last_notify_date": today_str})
-                            print(f"✅ Firebase 通知記錄已更新: {today_str}")
-                        except Exception as e_notify_write:
-                            print(f"⚠️ 無法寫入 Firebase 通知記錄: {e_notify_write}")
+
+                # 先建立本地鎖；若無法建立鎖，寧可跳過本次，也不要冒著重複發送的風險。
+                if not write_last_notify_date(today_str):
+                    print("⚠️ 無法建立 Telegram 去重鎖，為避免重複發送，跳過本次通知。")
                 else:
-                    print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
+                    try:
+                        res = requests.post(url, json=payload, timeout=30)
+                    except Exception:
+                        # Telegram 根本未回應時解除本次鎖，讓後續排程可以重試。
+                        write_last_notify_date(local_notify_date)
+                        raise
+
+                    if res.status_code == 200:
+                        print("✅ Telegram 異動通知發送成功！")
+                        print(f"✅ 本地通知記錄已更新: {today_str}")
+                        # 寫入 Firebase，讓其他執行環境也能辨識已發送狀態。
+                        if notify_db:
+                            try:
+                                notify_db.collection("quant_fund").document("notify_metadata").set(
+                                    {"last_notify_date": today_str}, merge=True
+                                )
+                                print(f"✅ Firebase 通知記錄已更新: {today_str}")
+                            except Exception as e_notify_write:
+                                print(f"⚠️ 無法寫入 Firebase 通知記錄，將由本地通知記錄防止重送: {e_notify_write}")
+                    else:
+                        # API 明確回覆失敗時解除鎖，保留下一個排程重試的機會。
+                        write_last_notify_date(local_notify_date)
+                        print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
         elif already_notified:
             print("💡 今日已發送過異動通知，為避免打擾跳過發送。")
         else:
