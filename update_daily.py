@@ -813,7 +813,7 @@ dashboard_data = {
     "history": [{ "date": d.strftime("%Y-%m-%d"), "nav": round(v, 2), "benchmark": round(bm_aligned.at[d, bm_col], 2), "mdd": round(m * 100, 2) } for d, v, m in zip(df_nav.index, df_nav['nav'], df_nav['drawdown']) ]
 }
 
-# --- Telegram 異動通知 ---
+# --- Telegram 每日選股通知 ---
 print("檢查是否需要發送 Telegram 通知...")
 try:
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -823,65 +823,9 @@ try:
         def escape_html(text):
             return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-        # 1. 整理明天要賣出的名單
-        sell_msgs = []
-        if PENDING_EXITS:
-            for p in PENDING_EXITS:
-                sid = p['stock_id']
-                name = escape_html(name_mapper.get(sid, str(sid)))
-                reason = "停損出場" if p.get('reason') == "Stop Loss" else "時間出場"
-                sell_msgs.append(f"• {sid} {name} ({reason})")
-                
-        # 2. 整理明天準備買入的名單
-        buy_msgs = []
         last_date = df_nav.index[-1]
-        # 推算下一個交易日（跳過週末與證交所已公告休市日）
-        tomorrow = next_estimated_twse_trading_day(last_date)
-        
-        # 取出最新的大盤日期以供判斷
-        latest_bm_date = last_date
-        if last_date not in benchmark.index:
-            latest_bm_date = benchmark.index[-1] if not benchmark.empty else last_date
 
-        # 模擬大盤濾網檢查 (最新大盤收盤是否站上 200MA)
-        market_pass = True
-        if latest_bm_date in benchmark.index and latest_bm_date in benchmark_ma200.index:
-            bm_today = benchmark.at[latest_bm_date, benchmark.columns[0]]
-            bm_ma_today = benchmark_ma200.at[latest_bm_date, benchmark_ma200.columns[0]]
-            if pd.notna(bm_today) and pd.notna(bm_ma_today) and bm_today < bm_ma_today: 
-                market_pass = False
-        
-        # 檢查明天是否為建倉日 10-15 號，且大盤在 200MA 之上
-        tomorrow_day = tomorrow.day
-        if 10 <= tomorrow_day <= 15 and market_pass:
-            available_slots = PORTFOLIO_SIZE - len(PORTFOLIO)
-            if tomorrow >= STAGGERED_ENTRY_START_DATE:
-                tomorrow_buy_quota = get_entry_quota(tomorrow, window_buy_quota)
-                slots_to_fill = min(available_slots, tomorrow_buy_quota)
-            else:
-                tomorrow_buy_quota = available_slots
-                slots_to_fill = available_slots
-            if slots_to_fill > 0:
-                signals = selected_stocks_signal.get(last_date, [])
-                for sid in signals:
-                    if slots_to_fill <= 0: break
-                    if any(p['stock_id'] == sid for p in PORTFOLIO): continue
-                    
-                    # 模擬次日買入的過濾條件
-                    curr_ma = ma200.at[last_date, sid]
-                    curr_close = close_signal.at[last_date, sid]
-                    if pd.isna(curr_ma) or curr_close <= curr_ma: 
-                        continue
-                        
-                    lbd = last_buy_date.get(sid)
-                    if lbd and (close_trade.index.get_loc(last_date) - close_trade.index.get_loc(lbd)) <= COOLING_OFF_DAYS: 
-                        continue
-                        
-                    name = escape_html(name_mapper.get(sid, str(sid)))
-                    buy_msgs.append(f"• {sid} {name}")
-                    slots_to_fill -= 1
-
-        # 3. 整理今日前五名選股訊號
+        # 1. 整理今日前五名選股訊號
         top5_msgs = []
         signals_today = selected_stocks_signal.get(last_date, [])[:5]
         for i, sid in enumerate(signals_today):
@@ -923,38 +867,16 @@ try:
         except Exception as e_notify_read:
             print(f"⚠️ 無法讀取 Firebase 通知記錄，改用本地通知記錄判斷: {e_notify_read}")
 
-        # 4. 放寬資料同步限制：如果大盤指數尚未更新至今日，則以「最近一個交易日」的大盤狀態為準
-        # 避免因為 Finlab 大盤資料延遲而導致完全發不出通知 (包含停損)
-        is_data_fully_synced = True
-        latest_bm_date = last_date
-        if last_date not in benchmark.index:
-            is_data_fully_synced = False
-            latest_bm_date = benchmark.index[-1] if not benchmark.empty else last_date
-            print(f"🕒 個股已更新至 {last_date.strftime('%Y-%m-%d')}，但大盤指數僅至 {latest_bm_date.strftime('%Y-%m-%d')}。將使用最近一天大盤資料作為參考，並照常發送通知。")
-
-        # 5. 發送通知 (放寬限制：只要有異動就發送，不再被 is_data_fully_synced 卡死)
-        if (sell_msgs or buy_msgs or top5_msgs) and not already_notified:
+        # 2. 有選股訊號且當日尚未通知時，發送一次。
+        if top5_msgs and not already_notified:
             if TEST_MODE:
-                print("💡 [測試模式] 有交易異動，但跳過發送 Telegram 通知")
+                print("💡 [測試模式] 有選股訊號，但跳過發送 Telegram 通知")
             else:
                 msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
-                
+
                 if top5_msgs:
                     msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
-                    
-                msg += "\n⚡ <b>明日預計交易異動:</b>\n"
-                if sell_msgs or buy_msgs:
-                    if sell_msgs:
-                        msg += "🔴 <b>準備賣出:</b>\n" + "\n".join(sell_msgs) + "\n"
-                    if buy_msgs:
-                        msg += (
-                            f"\n🟢 <b>準備買入（明日分批配額上限 "
-                            f"{tomorrow_buy_quota} 檔）:</b>\n"
-                            + "\n".join(buy_msgs) + "\n"
-                        )
-                else:
-                    msg += "✅ 無買賣異動。\n"
-                    
+
                 url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
                 payload = {
                     "chat_id": tg_chat_id,
@@ -974,7 +896,7 @@ try:
                         raise
 
                     if res.status_code == 200:
-                        print("✅ Telegram 異動通知發送成功！")
+                        print("✅ Telegram 選股通知發送成功！")
                         print(f"✅ 本地通知記錄已更新: {today_str}")
                         # 寫入 Firebase，讓其他執行環境也能辨識已發送狀態。
                         if notify_db:
@@ -990,9 +912,9 @@ try:
                         write_last_notify_date(local_notify_date)
                         print(f"⚠️ Telegram 發送失敗，狀態碼: {res.status_code}, {res.text}")
         elif already_notified:
-            print("💡 今日已發送過異動通知，為避免打擾跳過發送。")
+            print("💡 今日已發送過選股通知，為避免打擾跳過發送。")
         else:
-            print("無買賣異動，跳過發送通知。")
+            print("今日無選股訊號，跳過發送通知。")
     else:
         print("⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，跳過發送通知。")
 except Exception as e:
