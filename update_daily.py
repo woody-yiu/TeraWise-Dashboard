@@ -902,9 +902,7 @@ try:
             except Exception as client_error:
                 # 異常不可被當成「無買賣」，並保留原本每日選股報告。
                 client_message = (
-                    "\n\n👤 <b>New Noble 隔日操作</b>\n"
-                    "⚠️ 無法產生買賣清單："
-                    + escape_html(client_error)
+                    "\n⚠️ New Noble 買賣清單暫缺，待資料更新。"
                 )
                 print(f"⚠️ New Noble 通知資料檢查未通過: {type(client_error).__name__}")
 
@@ -914,10 +912,10 @@ try:
                 print("💡 [測試模式] 跳過發送 Telegram 通知")
                 print(client_message)
             else:
-                msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
+                msg = f"📊 <b>每日選股｜{last_date:%Y-%m-%d}</b>\n"
 
                 if top5_msgs:
-                    msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
+                    msg += "\n".join(top5_msgs) + "\n"
                 msg += client_message
 
                 url = f"https://api.telegram.org/bot{tg_token}/sendMessage"

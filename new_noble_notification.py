@@ -281,9 +281,9 @@ def build_plan(snapshot, *, signal_date, buy_date, raw_close, raw_open, adj_clos
         held_days = calendar.get_loc(signal_date) - calendar.get_loc(entry)
         reason = None
         if current_adj <= basis * 0.90:
-            reason = f"觸及 10% 停損（買進日還原開盤價基準 {stop_return:+.2%}）"
+            reason = f"停損（{stop_return:+.2%}）"
         elif held_days >= 40:
-            reason = f"持有期滿（{held_days} 個交易日）"
+            reason = f"持有滿 {held_days} 交易日"
         if reason:
             sells.append({"stock_id": sid, "reason": reason})
             gross = current * p["shares"]
@@ -312,7 +312,7 @@ def build_plan(snapshot, *, signal_date, buy_date, raw_close, raw_open, adj_clos
                 if not math.isfinite(price) or not math.isfinite(average) or price <= average:
                     continue
                 _price(raw_close, signal_date, sid)
-                buys.append({"stock_id": sid})
+                buys.append({"stock_id": sid, "reason": "分批進場、補足空位"})
                 if len(buys) == slots:
                     break
     elif not 10 <= buy_date.day <= 15:
@@ -326,24 +326,17 @@ def build_plan(snapshot, *, signal_date, buy_date, raw_close, raw_open, adj_clos
 
 def format_plan(plan, name_mapper):
     esc = html.escape
-    lines = ["", "👤 <b>New Noble 隔日操作</b>",
-             f"📅 下一交易日：{plan['buy_date']:%Y-%m-%d}",
-             f"持倉 {plan['holdings_count']} 檔｜確認時間 {plan['checked_at']}",
-             "🔴 <b>預計賣出：</b>"]
-    for order in plan["sells"]:
-        sid = order["stock_id"]
-        lines.append(f"• {esc(sid)} {esc(str(name_mapper.get(sid, '')))}｜{esc(order['reason'])}")
-    if not plan["sells"]:
-        lines.append("無")
-    lines.append("🟢 <b>預計買入標的：</b>")
-    for order in plan["buys"]:
-        sid = order["stock_id"]
-        lines.append(f"• {esc(sid)} {esc(str(name_mapper.get(sid, '')))}")
-    if not plan["buys"]:
-        lines.append("無")
-    lines.extend(f"• {esc(note)}" for note in plan["notes"])
-    if plan["buys"]:
-        lines.append("依網站當日訊號與客戶空位篩選；股數及可用額度由客戶原通知流程確認。")
+    lines = []
+    for key, label in (("sells", "🔴 賣出"), ("buys", "🟢 買入")):
+        orders = plan.get(key, [])
+        if not orders:
+            continue
+        lines.append(f"\n<b>{label}｜{plan['buy_date']:%m/%d}</b>")
+        for order in orders:
+            sid = order["stock_id"]
+            name = esc(str(name_mapper.get(sid, "")))
+            reason = esc(str(order["reason"]))
+            lines.append(f"• {esc(sid)} {name}｜{reason}")
     return "\n".join(lines)
 
 
