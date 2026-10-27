@@ -11,6 +11,11 @@ on:
     # Taiwan Time (UTC+8): 19:13
     - cron: '13 11 * * *'
   workflow_dispatch:
+    inputs:
+      verify_new_noble:
+        description: "Verify private holdings without sending Telegram"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -40,7 +45,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Verify New Noble Private Holdings
+        if: ${{ inputs.verify_new_noble == true }}
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta
+          import new_noble_notification as n
+          snapshot = n.load_positions(n.get_database())
+          checked = datetime.fromisoformat(snapshot["checked_at"])
+          assert timedelta(0) <= datetime.now(n.TAIPEI) - checked <= timedelta(hours=36)
+          assert snapshot["client"] == "New Noble"
+          print("NEW_NOBLE_CLOUD_READ_OK", "holdings", len(snapshot["positions"]), "latest_trade_date", snapshot["latest_trade_date"])
+          PY
+
       - name: Run Update Script
+        if: ${{ inputs.verify_new_noble != true }}
         env:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -49,6 +70,7 @@ jobs:
         run: python update_daily.py
 
       - name: Commit and Push Changes
+        if: ${{ inputs.verify_new_noble != true }}
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"

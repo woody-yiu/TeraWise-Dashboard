@@ -11,6 +11,7 @@ import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 import requests
+from new_noble_notification import build_plan, format_plan, load_positions, sync_positions
 
 warnings.filterwarnings('ignore')
 
@@ -193,6 +194,9 @@ volume = data.get("price:成交股數")
 benchmark = data.get('taiex_total_index:收盤指數')
 benchmark = benchmark[~benchmark.index.duplicated(keep='first')]
 benchmark_ma200 = benchmark.rolling(200).mean()
+notification_raw_close = close_unadj
+notification_raw_open = open_unadj
+notification_adj_close = close_adj
 
 # --- 1. 處理「多重標籤」 (Multi-Label Mapping) ---
 print("處理多重題材標籤 (混合動態版：早期回填 + 近期逐日更新)...")
@@ -225,6 +229,7 @@ theme_raw = pd.concat([snapshot_1, snapshot_2, future_updates]).sort_values('key
 
 # 準備名稱與顯示用對照表 (維持最新標籤僅供最終 Dashboard 顯示用)
 name_mapper = theme_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["name"]
+notification_name_mapper = name_mapper.copy()
 cat_mapper = cat_raw.drop_duplicates("stock_id", keep="last").set_index("stock_id")["category"]
 
 # 提取所有曾經出現過的股票，確立基礎 Universe
@@ -843,7 +848,7 @@ try:
             print(f"💡 本地通知記錄顯示 {today_str} 已發送。")
         try:
             firebase_cert_tg = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-            if firebase_cert_tg:
+            if firebase_cert_tg and not TEST_MODE:
                 cert_dict_tg = json.loads(firebase_cert_tg)
                 if not firebase_admin._apps:
                     cred_tg = credentials.Certificate(cert_dict_tg)
@@ -867,15 +872,53 @@ try:
         except Exception as e_notify_read:
             print(f"⚠️ 無法讀取 Firebase 通知記錄，改用本地通知記錄判斷: {e_notify_read}")
 
-        # 2. 有選股訊號且當日尚未通知時，發送一次。
-        if top5_msgs and not already_notified:
+        # 客戶資料只用於私人 Telegram，不放入 dashboard_data 或公開 HTML。
+        # 即使沒有前五強，也要能通知客戶賣出或顯示持倉同步異常。
+        client_message = ""
+        if not already_notified:
+            try:
+                client_snapshot = load_positions(notify_db)
+                if notify_db is not None and not TEST_MODE and not os.environ.get("GITHUB_ACTIONS"):
+                    sync_positions(client_snapshot, notify_db)
+                client_buy_date = next_estimated_twse_trading_day(last_date)
+                client_window = estimated_twse_trading_days(
+                    client_buy_date.replace(day=10), client_buy_date.replace(day=15)
+                )
+                client_quota = build_window_buy_quota(client_window).get(client_buy_date, 0)
+                client_plan = build_plan(
+                    client_snapshot,
+                    signal_date=last_date, buy_date=client_buy_date,
+                    raw_close=notification_raw_close,
+                    raw_open=notification_raw_open,
+                    adj_close=notification_adj_close,
+                    candidates=selected_stocks_signal.get(last_date),
+                    daily_quota=client_quota,
+                    moving_average=ma200.loc[last_date],
+                    signal_close=close_signal.loc[last_date],
+                    benchmark_close=benchmark.at[last_date, benchmark.columns[0]],
+                    benchmark_average=benchmark_ma200.at[last_date, benchmark_ma200.columns[0]],
+                )
+                client_message = format_plan(client_plan, notification_name_mapper)
+            except Exception as client_error:
+                # 異常不可被當成「無買賣」，並保留原本每日選股報告。
+                client_message = (
+                    "\n\n👤 <b>New Noble 隔日操作</b>\n"
+                    "⚠️ 無法產生買賣清單："
+                    + escape_html(client_error)
+                )
+                print(f"⚠️ New Noble 通知資料檢查未通過: {type(client_error).__name__}")
+
+        # 2. 每個訊號日發送一次；選股、客戶買賣共用原本去重鎖。
+        if not already_notified:
             if TEST_MODE:
-                print("💡 [測試模式] 有選股訊號，但跳過發送 Telegram 通知")
+                print("💡 [測試模式] 跳過發送 Telegram 通知")
+                print(client_message)
             else:
                 msg = f"📊 <b>【量化策略每日報告】</b>\n📅 資料日期: {last_date.strftime('%Y-%m-%d')}\n"
 
                 if top5_msgs:
                     msg += "\n🏆 <b>今日策略前五強:</b>\n" + "\n".join(top5_msgs) + "\n"
+                msg += client_message
 
                 url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
                 payload = {
@@ -895,7 +938,7 @@ try:
                         write_last_notify_date(local_notify_date)
                         raise
 
-                    if res.status_code == 200:
+                    if res.status_code == 200 and res.json().get("ok") is True:
                         print("✅ Telegram 選股通知發送成功！")
                         print(f"✅ 本地通知記錄已更新: {today_str}")
                         # 寫入 Firebase，讓其他執行環境也能辨識已發送狀態。
