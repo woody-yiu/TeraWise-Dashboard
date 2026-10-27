@@ -21,6 +21,9 @@ login(token)
 
 # 2. Parameters
 TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
+VALIDATE_NOTIFICATION_ONLY = os.environ.get("VALIDATE_NOTIFICATION_ONLY") == "1"
+if VALIDATE_NOTIFICATION_ONLY:
+    TEST_MODE = True
 FORCE_RECALCULATE = False # 設為 True 時，將忽略快取，重新計算所有歷史訊號（更改策略參數時請設為 True）
 N_DAYS = 5
 MIN_LIQ_PCT = 0.6
@@ -842,13 +845,16 @@ try:
         # GitHub Actions 會在每次成功執行後提交日期檔，因此 Firebase 暫時異常時也不會重複發送。
         notify_db = None
         today_str = last_date.strftime('%Y-%m-%d')
+        resend_date = os.environ.get("TELEGRAM_RESEND_SIGNAL_DATE", "").strip()
+        if resend_date and resend_date != today_str:
+            raise SystemExit("補發日期與最新訊號日期不符，停止發送")
         local_notify_date = read_last_notify_date()
         already_notified = local_notify_date == today_str
         if already_notified:
             print(f"💡 本地通知記錄顯示 {today_str} 已發送。")
         try:
             firebase_cert_tg = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-            if firebase_cert_tg and not TEST_MODE:
+            if firebase_cert_tg and (not TEST_MODE or VALIDATE_NOTIFICATION_ONLY):
                 cert_dict_tg = json.loads(firebase_cert_tg)
                 if not firebase_admin._apps:
                     cred_tg = credentials.Certificate(cert_dict_tg)
@@ -863,18 +869,26 @@ try:
                 if firebase_notify_date == today_str:
                     already_notified = True
                     print(f"💡 Firebase 通知記錄顯示 {today_str} 已發送。")
-                    if local_notify_date != today_str and write_last_notify_date(today_str):
+                    if not TEST_MODE and local_notify_date != today_str and write_last_notify_date(today_str):
                         local_notify_date = today_str
                         print(f"✅ 已同步本地通知記錄: {today_str}")
-                elif already_notified:
+                elif already_notified and not TEST_MODE:
                     notify_ref.set({"last_notify_date": today_str}, merge=True)
                     print(f"✅ 已同步 Firebase 通知記錄: {today_str}")
         except Exception as e_notify_read:
             print(f"⚠️ 無法讀取 Firebase 通知記錄，改用本地通知記錄判斷: {e_notify_read}")
 
+        if resend_date:
+            if notify_db is None:
+                raise SystemExit("補發需要 Firebase 防重送紀錄，停止發送")
+            already_notified = False
+        if VALIDATE_NOTIFICATION_ONLY:
+            already_notified = False
+
         # 客戶資料只用於私人 Telegram，不放入 dashboard_data 或公開 HTML。
         # 即使沒有前五強，也要能通知客戶賣出或顯示持倉同步異常。
         client_message = ""
+        client_plan_valid = False
         if not already_notified:
             try:
                 client_snapshot = load_positions(notify_db)
@@ -895,35 +909,62 @@ try:
                     daily_quota=client_quota,
                     moving_average=ma200.loc[last_date],
                     signal_close=close_signal.loc[last_date],
-                    benchmark_close=benchmark.at[last_date, benchmark.columns[0]],
-                    benchmark_average=benchmark_ma200.at[last_date, benchmark_ma200.columns[0]],
+                    benchmark_close=benchmark.reindex([last_date]).iloc[0, 0],
+                    benchmark_average=benchmark_ma200.reindex([last_date]).iloc[0, 0],
                 )
                 client_message = format_plan(client_plan, notification_name_mapper)
+                client_plan_valid = True
             except Exception as client_error:
                 # 異常不可被當成「無買賣」，並保留原本每日選股報告。
                 client_message = (
                     "\n⚠️ New Noble 買賣清單暫缺，待資料更新。"
                 )
-                print(f"⚠️ New Noble 通知資料檢查未通過: {type(client_error).__name__}")
+                print(f"⚠️ New Noble 通知資料檢查未通過: {type(client_error).__name__}: {client_error}")
+
+        if resend_date and not client_plan_valid:
+            raise SystemExit("買賣清單驗證失敗，停止補發")
+        if VALIDATE_NOTIFICATION_ONLY and (not client_plan_valid or client_plan.get("buy_blocked_reason")):
+            raise SystemExit("完整通知驗證失敗，未發送或更新通知紀錄")
 
         # 2. 每個訊號日發送一次；選股、客戶買賣共用原本去重鎖。
         if not already_notified:
+            msg = f"📊 <b>每日選股｜{last_date:%Y-%m-%d}</b>\n"
+            if top5_msgs:
+                msg += "\n".join(top5_msgs) + "\n"
+            msg += client_message
+            import hashlib
+            message_sha256 = hashlib.sha256(msg.encode()).hexdigest()
             if TEST_MODE:
                 print("💡 [測試模式] 跳過發送 Telegram 通知")
-                print(client_message)
+                if VALIDATE_NOTIFICATION_ONLY:
+                    print("FULL_NOTIFICATION_VALIDATED", today_str,
+                          "top5", len(top5_msgs), "sells", len(client_plan["sells"]),
+                          "buys", len(client_plan["buys"]),
+                          "sha256", message_sha256)
+                else:
+                    print(client_message)
             else:
-                msg = f"📊 <b>每日選股｜{last_date:%Y-%m-%d}</b>\n"
-
-                if top5_msgs:
-                    msg += "\n".join(top5_msgs) + "\n"
-                msg += client_message
-
                 url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
                 payload = {
                     "chat_id": tg_chat_id,
                     "text": msg,
                     "parse_mode": "HTML"
                 }
+
+                resend_ref = None
+                if resend_date:
+                    if os.environ.get("TELEGRAM_EXPECTED_MESSAGE_SHA256", "") != message_sha256:
+                        raise SystemExit("補發內容與已驗證版本不符，停止發送")
+                    # 同日補發以原子 create 預約一次，逾時也不會盲目重送。
+                    from google.api_core.exceptions import AlreadyExists
+                    resend_ref = notify_db.collection("private_client_notifications").document(
+                        f"telegram_resend_{today_str}"
+                    )
+                    try:
+                        resend_ref.create({"status": "sending", "signal_date": today_str,
+                                           "message_sha256": message_sha256})
+                    except AlreadyExists:
+                        raise SystemExit("當日補發已有紀錄，停止重複發送")
 
                 # 先建立本地鎖；若無法建立鎖，寧可跳過本次，也不要冒著重複發送的風險。
                 if not write_last_notify_date(today_str):
@@ -937,6 +978,8 @@ try:
                         raise
 
                     if res.status_code == 200 and res.json().get("ok") is True:
+                        if resend_ref is not None:
+                            resend_ref.update({"status": "sent", "message_id": res.json()["result"]["message_id"]})
                         print("✅ Telegram 選股通知發送成功！")
                         print(f"✅ 本地通知記錄已更新: {today_str}")
                         # 寫入 Firebase，讓其他執行環境也能辨識已發送狀態。

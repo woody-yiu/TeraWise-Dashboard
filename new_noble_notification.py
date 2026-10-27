@@ -291,10 +291,12 @@ def build_plan(snapshot, *, signal_date, buy_date, raw_close, raw_open, adj_clos
     quota = max(0, int(daily_quota)) if 10 <= buy_date.day <= 15 else 0
     slots = min(max(0, 15 - len(positions) + len(sells)), quota)
     buys = []
+    buy_blocked_reason = ""
     if slots:
         if not all(math.isfinite(float(v)) and float(v) > 0 for v in (benchmark_close, benchmark_average)):
-            raise ValueError("大盤濾網資料缺漏")
-        if benchmark_close < benchmark_average:
+            buy_blocked_reason = "大盤資料未更新"
+            notes.append("大盤濾網資料缺漏，暫停新增買入；賣出照常檢查")
+        elif benchmark_close < benchmark_average:
             notes.append("大盤低於 200 日均線，暫不新增買入")
         elif available_cash <= 0:
             notes.append("可用現金不足，暫不新增買入")
@@ -321,6 +323,7 @@ def build_plan(snapshot, *, signal_date, buy_date, raw_close, raw_open, adj_clos
         notes.append("客戶持倉已達 15 檔")
     return {"signal_date": signal_date, "buy_date": buy_date, "sells": sells,
             "buys": buys, "notes": notes, "holdings_count": len(positions),
+            "buy_blocked_reason": buy_blocked_reason,
             "checked_at": checked.astimezone(TAIPEI).strftime("%m/%d %H:%M")}
 
 
@@ -337,6 +340,8 @@ def format_plan(plan, name_mapper):
             name = esc(str(name_mapper.get(sid, "")))
             reason = esc(str(order["reason"]))
             lines.append(f"• {esc(sid)} {name}｜{reason}")
+    if plan.get("buy_blocked_reason"):
+        lines.append("\n⚠️ 買入暫緩：" + esc(plan["buy_blocked_reason"]) + "。")
     return "\n".join(lines)
 
 

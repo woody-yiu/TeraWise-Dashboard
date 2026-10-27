@@ -16,6 +16,14 @@ on:
         description: "Verify private holdings without sending Telegram"
         type: boolean
         default: false
+      resend_signal_date:
+        description: "Resend corrected report once for this signal date (YYYY-MM-DD)"
+        type: string
+        default: ""
+      resend_message_sha256:
+        description: "SHA256 of the successfully validated corrected report"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -48,17 +56,12 @@ jobs:
       - name: Verify New Noble Private Holdings
         if: ${{ inputs.verify_new_noble == true }}
         env:
+          FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          python - <<'PY'
-          from datetime import datetime, timedelta
-          import new_noble_notification as n
-          snapshot = n.load_positions(n.get_database())
-          checked = datetime.fromisoformat(snapshot["checked_at"])
-          assert timedelta(0) <= datetime.now(n.TAIPEI) - checked <= timedelta(hours=36)
-          assert snapshot["client"] == "New Noble"
-          print("NEW_NOBLE_CLOUD_READ_OK", "holdings", len(snapshot["positions"]), "latest_trade_date", snapshot["latest_trade_date"])
-          PY
+          TELEGRAM_BOT_TOKEN: "VALIDATION_ONLY_NO_DELIVERY"
+          TELEGRAM_CHAT_ID: "VALIDATION_ONLY_NO_DELIVERY"
+          VALIDATE_NOTIFICATION_ONLY: "1"
+        run: python update_daily.py
 
       - name: Run Update Script
         if: ${{ inputs.verify_new_noble != true }}
@@ -67,6 +70,8 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_RESEND_SIGNAL_DATE: ${{ inputs.resend_signal_date }}
+          TELEGRAM_EXPECTED_MESSAGE_SHA256: ${{ inputs.resend_message_sha256 }}
         run: python update_daily.py
 
       - name: Commit and Push Changes
