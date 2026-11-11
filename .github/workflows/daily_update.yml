@@ -2,16 +2,16 @@ name: Daily Dashboard Update (Fixed)
 
 on:
   schedule:
-    # Taiwan Time (UTC+8): 08:38
-    - cron: '38 0 * * *'
-    # Taiwan Time (UTC+8): 14:47, 16:47
-    - cron: '47 6,8 * * *'
-    # Taiwan Time (UTC+8): 17:53
-    - cron: '53 9 * * *'
-    # Taiwan Time (UTC+8): 19:13
-    - cron: '13 11 * * *'
+    # Taiwan Time (UTC+8): 15:35, 16:35. Backup for the independent scheduler.
+    - cron: '35 7,8 * * *'
+    # Taiwan Time (UTC+8): 16:00
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
+      verify_scheduler_only:
+        description: "Verify the scheduler trigger without updating data or sending notifications"
+        type: boolean
+        default: false
       verify_new_noble:
         description: "Verify private holdings without sending Telegram"
         type: boolean
@@ -34,8 +34,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  update-dashboard:
+  verify-scheduler:
+    if: ${{ inputs.verify_scheduler_only == true }}
     runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Verify scheduler trigger only
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          TZ=Asia/Taipei date '+Scheduler verified: %Y-%m-%d %H:%M:%S %Z'
+          printf 'Trigger: %s\n' "$EVENT_NAME"
+
+  update-dashboard:
+    if: ${{ inputs.verify_scheduler_only != true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -61,7 +77,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: "VALIDATION_ONLY_NO_DELIVERY"
           TELEGRAM_CHAT_ID: "VALIDATION_ONLY_NO_DELIVERY"
           VALIDATE_NOTIFICATION_ONLY: "1"
-        run: python update_daily.py
+        run: python -u update_daily.py
 
       - name: Run Update Script
         if: ${{ inputs.verify_new_noble != true }}
@@ -72,7 +88,40 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_RESEND_SIGNAL_DATE: ${{ inputs.resend_signal_date }}
           TELEGRAM_EXPECTED_MESSAGE_SHA256: ${{ inputs.resend_message_sha256 }}
-        run: python update_daily.py
+        run: |
+          echo "PUBLISH_STARTED_AT=$(date -u +'%Y-%m-%dT%H:%M:%S+00:00')" >> "$GITHUB_ENV"
+          python -u update_daily.py
+
+      - name: Verify published dashboard
+        if: ${{ inputs.verify_new_noble != true }}
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+          import firebase_admin
+          from firebase_admin import credentials, firestore
+
+          firebase_admin.initialize_app(credentials.Certificate(json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])))
+          snapshot = firestore.client().collection("quant_fund").document("dashboard_data").get(timeout=30)
+          if not snapshot.exists:
+              raise SystemExit("Dashboard publication failed: document missing")
+          payload = snapshot.to_dict()
+          published = payload["summary"]["last_update"]
+          published_at = datetime.strptime(published, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=8)))
+          started_at = datetime.fromisoformat(os.environ["PUBLISH_STARTED_AT"])
+          if published_at < started_at:
+              raise SystemExit("Dashboard publication failed: stored data predates this run")
+          history = payload.get("history", [])
+          if not history:
+              raise SystemExit("Dashboard publication failed: price history missing")
+          signal_date = history[-1]["date"]
+          print(f"PUBLISH_VERIFIED published_at={published} data_date={signal_date}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"Published (Asia/Taipei): {published}\n\nData date: {signal_date}\n")
+          PY
 
       - name: Commit and Push Changes
         if: ${{ inputs.verify_new_noble != true }}
