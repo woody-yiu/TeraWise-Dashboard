@@ -6,12 +6,172 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, timezone
 import warnings
+import hashlib
+import math
+import re
+from pathlib import Path
+import importlib.metadata as package_metadata
 from finlab import login, data
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
 import requests
 from new_noble_notification import build_plan, format_plan, load_positions, sync_positions
+
+# Explicit strategy semantics and a shared, public-only cache state.
+SIGNAL_RULES_VERSION = "strategy03b_current_rules_legacy_fill_v1"
+SIGNAL_SYNC_START_DATE = pd.Timestamp("2026-11-11")
+WEBSITE_STATE_FILE = Path(__file__).with_name("website_update_state.json")
+TWSE_TAIEX_HISTORY_URL = "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST"
+
+
+def _read_website_state():
+    try:
+        with WEBSITE_STATE_FILE.open(encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if value.get("schema_version") == 1 else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _write_json_atomic(path, value):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_bytes((json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8"))
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _signal_cache_hash(payload):
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _signal_input_fingerprint(end_date):
+    digest = hashlib.sha256()
+    settings = {
+        "rules_version": SIGNAL_RULES_VERSION, "frozen_before": SIGNAL_SYNC_START_DATE.strftime("%Y-%m-%d"),
+        "pandas": pd.__version__,
+        "numpy": np.__version__, "finlab": package_metadata.version("finlab"),
+        "weights": weights, "n_days": N_DAYS, "min_liq_pct": MIN_LIQ_PCT,
+        "min_turnover": MIN_TURNOVER_TWD, "top_groups": TOP_GROUPS,
+        "top_stocks": TOP_STOCKS, "ma_period": 120, "ma_min_periods": 90,
+        "common_cols": common_cols.tolist(), "all_themes": list(all_themes),
+    }
+    digest.update(json.dumps(settings, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+    digest.update(pd.util.hash_pandas_object(
+        theme_raw[["key_date", "stock_id", "category"]], index=True).values.tobytes())
+    for frame in (ret, turnover, turnover_ma5, inst_buy_yday,
+                  inst_concentration, rev_yoy, ma200):
+        digest.update(pd.util.hash_pandas_object(
+            frame.loc[:pd.Timestamp(end_date)], index=True).values.tobytes())
+    return digest.hexdigest()
+
+
+def _market_filter_pass(value, average):
+    try:
+        value, average = float(value), float(average)
+        return all(math.isfinite(x) and x > 0 for x in (value, average)) and value >= average
+    except (TypeError, ValueError):
+        return False
+
+
+def _twse_month_closes(month, target_date):
+    response = requests.get(TWSE_TAIEX_HISTORY_URL,
+                            params={"date": month.strftime("%Y%m%d"), "response": "json"},
+                            headers={"User-Agent": "TeraWise-Dashboard/1.0"},
+                            timeout=(5, 15))
+    response.raise_for_status()
+    payload = response.json()
+    fields = [str(value).strip() for value in payload.get("fields", [])]
+    if payload.get("stat") != "OK" or "日期" not in fields or "收盤指數" not in fields:
+        raise ValueError("TWSE TAIEX closing report is not available")
+    date_column, price_column = fields.index("日期"), fields.index("收盤指數")
+    closes = {}
+    for row in payload.get("data", []):
+        parts = re.fullmatch(r"(\d{2,4})/(\d{1,2})/(\d{1,2})", str(row[date_column]).strip())
+        if not parts:
+            raise ValueError("Invalid TWSE trading date")
+        year, month_number, day = map(int, parts.groups())
+        date = pd.Timestamp(year=year + 1911 if year < 1911 else year,
+                            month=month_number, day=day)
+        if date.to_period("M") != month.to_period("M") or date > target_date:
+            continue
+        value = float(str(row[price_column]).replace(",", ""))
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("Invalid TWSE TAIEX closing value")
+        if date in closes and closes[date] != value:
+            raise ValueError("Conflicting TWSE closing values")
+        closes[date] = value
+    return pd.Series(closes, dtype=float).sort_index()
+
+
+def complete_market_benchmark(frame, target_date, trading_calendar, fetch_month=None, now=None):
+    """Append verified TWSE TAIEX price-index closes; never fill a missing trading day."""
+    target_date = pd.Timestamp(target_date).normalize()
+    clean = frame.copy()
+    clean.index = pd.DatetimeIndex(pd.to_datetime(clean.index)).normalize()
+    clean = clean[~clean.index.duplicated(keep="first")].sort_index()
+    clean.iloc[:, 0] = pd.to_numeric(clean.iloc[:, 0], errors="coerce")
+    series = clean.iloc[:, 0].astype(float)
+    series = series.where(np.isfinite(series) & (series > 0))
+    valid = series.dropna().loc[:target_date]
+    report = {"verified": False, "source": "FinLab", "signal_date": target_date.strftime("%Y-%m-%d"),
+              "data_date": valid.index[-1].strftime("%Y-%m-%d") if len(valid) else None,
+              "period": 200, "close": None, "ma200": None, "overlap_verified": 0,
+              "checked_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds")}
+    try:
+        calendar = pd.DatetimeIndex(trading_calendar).normalize().sort_values().unique()
+        expected = calendar[calendar <= target_date][-200:]
+        if len(expected) != 200 or target_date not in expected:
+            raise ValueError("Trading calendar has fewer than 200 observations or lacks signal date")
+        missing = expected.difference(valid.index)
+        if len(missing):
+            if len(valid) < 199:
+                raise ValueError("FinLab history has fewer than 199 valid observations")
+            now = now or datetime.now(timezone(timedelta(hours=8)))
+            if target_date.date() == now.date() and now.hour < 14:
+                raise ValueError("Official closing verification is not available before 14:00 Taipei")
+            start = min(missing[0], valid.index[-1]).to_period("M")
+            months = pd.period_range(start, target_date.to_period("M"), freq="M")
+            if len(months) > 12:
+                raise ValueError("Benchmark gap exceeds the 12-month fallback limit")
+            fetch_month = fetch_month or _twse_month_closes
+            pieces = [fetch_month(month.to_timestamp(), target_date) for month in months]
+            official = pd.concat(pieces).sort_index()
+            official = official[~official.index.duplicated(keep="first")]
+            official = official.loc[:target_date]
+            if official.empty or not np.isfinite(official).all() or not (official > 0).all():
+                raise ValueError("TWSE closing observations are empty or invalid")
+            overlap = valid.index.intersection(official.index)
+            if not len(overlap) or not np.allclose(valid.loc[overlap], official.loc[overlap], atol=0.02, rtol=0):
+                raise ValueError("TWSE and FinLab overlapping closes disagree")
+            if not missing.isin(official.index).all():
+                raise ValueError("TWSE report does not cover all missing trading dates")
+            series = series.reindex(series.index.union(missing))
+            series.loc[missing] = official.loc[missing]
+            series = series.sort_index()
+            report.update(source="TWSE官方備援＋FinLab歷史", source_url=TWSE_TAIEX_HISTORY_URL,
+                          overlap_verified=len(overlap))
+        actual = series.loc[:target_date].dropna().tail(200)
+        if not actual.index.equals(expected):
+            raise ValueError("Benchmark 200-day window does not match the trading calendar")
+        value, average = float(actual.iloc[-1]), float(actual.mean())
+        if not (math.isfinite(value) and value > 0 and math.isfinite(average) and average > 0):
+            raise ValueError("Benchmark close or 200MA is invalid")
+        result = series.to_frame(name=clean.columns[0])
+        report.update(verified=True, data_date=target_date.strftime("%Y-%m-%d"),
+                      close=value, ma200=average)
+        print("BENCHMARK_VERIFIED", json.dumps(report, ensure_ascii=False))
+        return result, report
+    except Exception as error:
+        report["reason"] = f"{type(error).__name__}: {error}"
+        print("BENCHMARK_UNVERIFIED", json.dumps(report, ensure_ascii=False))
+        return clean, report
+
 
 warnings.filterwarnings('ignore')
 
@@ -20,7 +180,9 @@ token = os.environ.get("FINLAB_TOKEN", "97Y21Yf07Tokqp6rnUxsQKHbc4j+HosTsqE5DNh2
 login(token)
 
 # 2. Parameters
-TEST_MODE = False # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
+DASHBOARD_VALIDATE_ONLY = os.environ.get("DASHBOARD_VALIDATE_ONLY") == "1"
+SUPPRESS_NOTIFICATIONS = DASHBOARD_VALIDATE_ONLY or os.environ.get("SUPPRESS_NOTIFICATIONS") == "1"
+TEST_MODE = DASHBOARD_VALIDATE_ONLY # 設為 True 時，僅在本地運算並產出 index_offline.html，不會發送通知或上傳雲端
 VALIDATE_NOTIFICATION_ONLY = os.environ.get("VALIDATE_NOTIFICATION_ONLY") == "1"
 if VALIDATE_NOTIFICATION_ONLY:
     TEST_MODE = True
@@ -196,7 +358,8 @@ open_adj = data.get("etl:adj_open")
 volume = data.get("price:成交股數")
 benchmark = data.get('taiex_total_index:收盤指數')
 benchmark = benchmark[~benchmark.index.duplicated(keep='first')]
-benchmark_ma200 = benchmark.rolling(200).mean()
+if DASHBOARD_VALIDATE_ONLY and os.environ.get("DASHBOARD_TEST_BENCHMARK_LAG") == "1":
+    benchmark = benchmark.loc[benchmark.index < close_adj.index[-1]]
 notification_raw_close = close_unadj
 notification_raw_open = open_unadj
 notification_adj_close = close_adj
@@ -313,8 +476,8 @@ ma200.loc[(ma200.index >= '2026-06-10') & (ma200.index < '2026-07-01')] = ma200_
 ma200.loc[ma200.index >= '2026-07-01'] = ma120_adj_new.loc[ma120_adj_new.index >= '2026-07-01']
 
 print("計算「動態多重標籤」產業選股訊號 (逐日推進矩陣)...")
-ret_unadj = close_unadj.pct_change(N_DAYS)
-ret_adj = close_adj.pct_change(N_DAYS)
+ret_unadj = close_unadj.ffill().pct_change(N_DAYS, fill_method=None)
+ret_adj = close_adj.ffill().pct_change(N_DAYS, fill_method=None)
 ret = ret_unadj.copy()
 ret.loc[ret.index >= '2026-06-10'] = ret_adj.loc[ret_adj.index >= '2026-06-10']
 
@@ -326,28 +489,65 @@ LIQ_UPGRADE_DATE = pd.Timestamp('2026-07-09')
 MIN_TURNOVER_TWD = 250_000_000  # 新版絕對門檻：單日均量 2.5 億
 
 
-SIGNAL_CACHE_FILE = 'historical_signals.json'
+SIGNAL_CACHE_FILE = "historical_signals.json"
 selected_stocks_signal = {}
-
-# 1. 嘗試載入歷史選股快取
-if os.path.exists(SIGNAL_CACHE_FILE) and not FORCE_RECALCULATE:
-    try:
-        with open(SIGNAL_CACHE_FILE, 'r', encoding='utf-8') as f:
-            cached_data = json.load(f)
-            for date_str, stocks in cached_data.items():
-                selected_stocks_signal[pd.Timestamp(date_str)] = stocks
-        print(f"📦 成功載入歷史選股快取，共 {len(selected_stocks_signal)} 筆。")
-    except Exception as e:
-        print(f"⚠️ 載入快取失敗，將重新計算: {e}")
-        selected_stocks_signal = {}
-
+computed_signal_dates = set()
+cache_loaded = False
 valid_index = close_adj.index.intersection(inst_buy_yday.index)
-
-# 建立動態更新的 Theme Matrix (起初全為 0)
+benchmark, benchmark_info = complete_market_benchmark(
+    benchmark, valid_index[-1], close_adj.index)
+benchmark_ma200 = benchmark.rolling(200).mean()
+# Keep historical gates unchanged; new decisions require 200 actual trading days.
+aligned_benchmark_ma200 = benchmark.reindex(close_adj.index).rolling(200).mean()
+new_gate_dates = benchmark_ma200.index.intersection(close_adj.index)
+new_gate_dates = new_gate_dates[new_gate_dates >= SIGNAL_SYNC_START_DATE]
+benchmark_ma200.loc[new_gate_dates] = aligned_benchmark_ma200.loc[new_gate_dates]
+if not benchmark_info["verified"] and valid_index[-1] >= SIGNAL_SYNC_START_DATE:
+    benchmark_ma200.loc[valid_index[-1]] = np.nan
+website_state = _read_website_state()
+current_input_fingerprint = _signal_input_fingerprint(valid_index[-1])
+cached_data = {}
+frozen_signals = {}
+frozen_dates = set()
+if os.path.exists(SIGNAL_CACHE_FILE):
+    try:
+        with open(SIGNAL_CACHE_FILE, encoding="utf-8") as handle:
+            cached_data = json.load(handle)
+        if not isinstance(cached_data, dict) or any(not isinstance(v, list) for v in cached_data.values()):
+            raise ValueError("Invalid existing historical signal format")
+        parsed_cache = {pd.Timestamp(d): stocks for d, stocks in cached_data.items()}
+        frozen_signals = {d: stocks for d, stocks in parsed_cache.items() if d < SIGNAL_SYNC_START_DATE}
+        frozen_dates = {d for d in valid_index if d < SIGNAL_SYNC_START_DATE}
+    except Exception as error:
+        raise RuntimeError("Existing historical cache cannot be read; refusing to rewrite history") from error
+selected_stocks_signal = dict(frozen_signals)
+computed_signal_dates = set(frozen_dates)
+if cached_data and not FORCE_RECALCULATE:
+    try:
+        metadata = website_state.get("signals", {})
+        cache_end = pd.Timestamp(metadata["last_data_date"])
+        if (metadata.get("rules_version") == SIGNAL_RULES_VERSION
+                and metadata.get("frozen_before") == SIGNAL_SYNC_START_DATE.strftime("%Y-%m-%d")
+                and cache_end <= valid_index[-1]
+                and metadata.get("cache_sha256") == _signal_cache_hash(cached_data)
+                and metadata.get("input_fingerprint") == (
+                    current_input_fingerprint if cache_end == valid_index[-1]
+                    else _signal_input_fingerprint(cache_end))):
+            selected_stocks_signal.update({d: stocks for d, stocks in parsed_cache.items()
+                                           if SIGNAL_SYNC_START_DATE <= d <= cache_end})
+            computed_signal_dates.update(pd.Timestamp(d) for d in metadata["computed_dates"]
+                                         if SIGNAL_SYNC_START_DATE <= pd.Timestamp(d) <= cache_end)
+            cache_loaded = True
+            print("SIGNAL_CACHE_VERIFIED", cache_end.strftime("%Y-%m-%d"))
+        else:
+            print("SIGNAL_CACHE_REBUILD_ACTIVE_ONLY rules or input data changed")
+    except Exception as error:
+        selected_stocks_signal = dict(frozen_signals)
+        computed_signal_dates = set(frozen_dates)
+        print("SIGNAL_CACHE_REBUILD_ACTIVE_ONLY", type(error).__name__)
 current_theme_matrix = pd.DataFrame(0, index=common_cols, columns=all_themes)
 theme_update_idx = 0
 theme_raw_records = theme_raw[['key_date', 'stock_id', 'theme_list']].to_dict('records')
-
 new_signals_calculated = False
 
 for date in valid_index[valid_index >= '2011-12-01']:
@@ -364,8 +564,9 @@ for date in valid_index[valid_index >= '2011-12-01']:
         theme_update_idx += 1
 
     # 如果這天的訊號已經在快取裡，就跳過耗時的指標計算
-    if date in selected_stocks_signal:
+    if date in computed_signal_dates:
         continue
+    computed_signal_dates.add(date)
         
     new_signals_calculated = True
 
@@ -455,12 +656,23 @@ for date in valid_index[valid_index >= '2011-12-01']:
     
     selected_stocks_signal[date] = df.sort_values("score", ascending=False).head(TOP_STOCKS).index.tolist()
 
-# 儲存新的選股結果到快取
-if new_signals_calculated:
-    print("💾 儲存更新後的選股結果至快取檔案...")
-    save_data = {d.strftime('%Y-%m-%d'): stocks for d, stocks in selected_stocks_signal.items()}
-    with open(SIGNAL_CACHE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(save_data, f, ensure_ascii=False, indent=2)
+# Store only public signal/benchmark state; validation never writes files.
+save_data = {d.strftime("%Y-%m-%d"): stocks for d, stocks in selected_stocks_signal.items()}
+website_state.update(schema_version=1)
+website_state["signals"] = {
+    "rules_version": SIGNAL_RULES_VERSION,
+    "last_data_date": pd.Timestamp(valid_index[-1]).strftime("%Y-%m-%d"),
+    "frozen_before": SIGNAL_SYNC_START_DATE.strftime("%Y-%m-%d"),
+    "frozen_history_sha256": _signal_cache_hash({d.strftime("%Y-%m-%d"): stocks for d, stocks in frozen_signals.items()}),
+    "input_fingerprint": current_input_fingerprint,
+    "cache_sha256": _signal_cache_hash(save_data),
+    "computed_dates": [d.strftime("%Y-%m-%d") for d in sorted(computed_signal_dates)],
+}
+website_state["benchmark"] = {k: v for k, v in benchmark_info.items() if k != "checked_at"}
+if not TEST_MODE:
+    if new_signals_calculated or not cache_loaded:
+        _write_json_atomic(SIGNAL_CACHE_FILE, save_data)
+    _write_json_atomic(WEBSITE_STATE_FILE, website_state)
 
 print("訊號計算完成。")
 
@@ -534,7 +746,9 @@ for i, today in enumerate(backtest_dates):
         market_pass = True
         bm_yesterday = benchmark.at[yesterday, benchmark.columns[0]] if yesterday in benchmark.index else np.nan
         bm_ma_yesterday = benchmark_ma200.at[yesterday, benchmark_ma200.columns[0]] if yesterday in benchmark_ma200.index else np.nan
-        if pd.notna(bm_yesterday) and pd.notna(bm_ma_yesterday) and bm_yesterday < bm_ma_yesterday: 
+        if yesterday >= SIGNAL_SYNC_START_DATE:
+            market_pass = _market_filter_pass(bm_yesterday, bm_ma_yesterday)
+        elif pd.notna(bm_yesterday) and pd.notna(bm_ma_yesterday) and bm_yesterday < bm_ma_yesterday:
             market_pass = False
         
         is_entry_window = 10 <= today.day <= 15
@@ -804,7 +1018,11 @@ last_update_str = datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
 dashboard_data = {
     "summary": { 
-        "last_update": last_update_str, 
+        "last_update": last_update_str,
+        "data_date": pd.Timestamp(valid_index[-1]).strftime("%Y-%m-%d"),
+        "signal_rules_version": SIGNAL_RULES_VERSION,
+        "signal_input_fingerprint": current_input_fingerprint,
+        "benchmark_status": benchmark_info,
         "sharpe": round(sharpe, 2), 
         "sortino": round(sortino, 2),
         "downside_risk": round(ann_downside_deviation * 100, 2), 
@@ -821,12 +1039,30 @@ dashboard_data = {
     "history": [{ "date": d.strftime("%Y-%m-%d"), "nav": round(v, 2), "benchmark": round(bm_aligned.at[d, bm_col], 2), "mdd": round(m * 100, 2) } for d, v, m in zip(df_nav.index, df_nav['nav'], df_nav['drawdown']) ]
 }
 
+if DASHBOARD_VALIDATE_ONLY:
+    print("DASHBOARD_VALIDATED", json.dumps({
+        "signal_date": pd.Timestamp(valid_index[-1]).strftime("%Y-%m-%d"),
+        "rules_version": SIGNAL_RULES_VERSION,
+        "input_fingerprint": current_input_fingerprint,
+        "latest_rank": selected_stocks_signal.get(valid_index[-1], []),
+        "signal_cache_sha256": website_state["signals"]["cache_sha256"],
+        "frozen_history_sha256": website_state["signals"]["frozen_history_sha256"],
+        "frozen_signal_dates": len(frozen_signals),
+        "signal_dates": len(selected_stocks_signal),
+        "computed_dates": len(computed_signal_dates),
+        "benchmark": benchmark_info,
+        "versions": {name: package_metadata.version(name) for name in ("finlab", "pandas", "numpy")},
+    }, ensure_ascii=False))
+    if not benchmark_info["verified"]:
+        raise SystemExit("Benchmark validation failed: " + benchmark_info.get("reason", "unknown"))
+    raise SystemExit(0)
+
 # --- Telegram 每日選股通知 ---
 print("檢查是否需要發送 Telegram 通知...")
 try:
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN")
     tg_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-    if tg_token and tg_chat_id:
+    if not SUPPRESS_NOTIFICATIONS and tg_token and tg_chat_id:
         # HTML 安全字元轉義函數，避免特殊字元 (&, <, >) 導致 Telegram API 報錯
         def escape_html(text):
             return str(text).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -1000,7 +1236,7 @@ try:
         else:
             print("今日無選股訊號，跳過發送通知。")
     else:
-        print("⚠️ 未設定 TELEGRAM_BOT_TOKEN 或 TELEGRAM_CHAT_ID，跳過發送通知。")
+        print("Telegram suppressed for this run." if SUPPRESS_NOTIFICATIONS else "Telegram credentials unavailable; skipping notification.")
 except Exception as e:
     print(f"⚠️ Telegram 執行時發生錯誤: {e}")
 
@@ -1074,7 +1310,7 @@ if not os.environ.get("GITHUB_ACTIONS") and not TEST_MODE:
         # 建立檔案以避免 git add 找不到報錯
         if not os.path.exists(".last_notify_date"):
             with open(".last_notify_date", "w") as f: pass
-        subprocess.run(["git", "add", "index.html", "update_daily.py", ".last_notify_date", "historical_signals.json"], check=True)
+        subprocess.run(["git", "add", "index.html", "update_daily.py", ".last_notify_date", "historical_signals.json", "website_update_state.json"], check=True)
         if subprocess.run(["git", "diff", "--staged", "--quiet"]).returncode != 0:
              subprocess.run(["git", "commit", "-m", f"Dashboard Logic Strict Fix: {datetime.now().strftime('%Y-%m-%d %H:%M')}"], check=True)
              subprocess.run(["git", "push", "origin", "main"], check=True)

@@ -8,6 +8,14 @@ on:
     - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
+      validate_website_only:
+        description: "Validate website rankings and benchmark without publishing or notifications"
+        type: boolean
+        default: false
+      suppress_notifications:
+        description: "Publish the dashboard without sending Telegram"
+        type: boolean
+        default: false
       verify_scheduler_only:
         description: "Verify the scheduler trigger without updating data or sending notifications"
         type: boolean
@@ -56,7 +64,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref }}
           fetch-depth: 0
 
       - name: Set up Python
@@ -69,8 +77,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Validate Website Rules and Benchmark
+        if: ${{ inputs.validate_website_only == true || github.ref != 'refs/heads/main' }}
+        env:
+          FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
+          DASHBOARD_VALIDATE_ONLY: "1"
+          DASHBOARD_TEST_BENCHMARK_LAG: "1"
+          SUPPRESS_NOTIFICATIONS: "1"
+        run: python -u update_daily.py
+
       - name: Verify New Noble Private Holdings
-        if: ${{ inputs.verify_new_noble == true }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.verify_new_noble == true && inputs.validate_website_only != true }}
         env:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
@@ -80,12 +97,13 @@ jobs:
         run: python -u update_daily.py
 
       - name: Run Update Script
-        if: ${{ inputs.verify_new_noble != true }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.verify_new_noble != true && inputs.validate_website_only != true }}
         env:
           FINLAB_TOKEN: ${{ secrets.FINLAB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPPRESS_NOTIFICATIONS: ${{ inputs.suppress_notifications && '1' || '0' }}
           TELEGRAM_RESEND_SIGNAL_DATE: ${{ inputs.resend_signal_date }}
           TELEGRAM_EXPECTED_MESSAGE_SHA256: ${{ inputs.resend_message_sha256 }}
         run: |
@@ -93,7 +111,7 @@ jobs:
           python -u update_daily.py
 
       - name: Verify published dashboard
-        if: ${{ inputs.verify_new_noble != true }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.verify_new_noble != true && inputs.validate_website_only != true }}
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
@@ -118,18 +136,26 @@ jobs:
           if not history:
               raise SystemExit("Dashboard publication failed: price history missing")
           signal_date = history[-1]["date"]
+          if payload["summary"].get("signal_rules_version") != "strategy03b_current_rules_legacy_fill_v1":
+              raise SystemExit("Dashboard rules version mismatch")
+          if payload["summary"].get("data_date") != signal_date:
+              raise SystemExit("Dashboard signal date mismatch")
+          market = payload["summary"].get("benchmark_status", {})
+          if market.get("verified") and market.get("data_date") != signal_date:
+              raise SystemExit("Verified benchmark date mismatch")
+          print("BENCHMARK_PUBLICATION", json.dumps(market, ensure_ascii=False))
           print(f"PUBLISH_VERIFIED published_at={published} data_date={signal_date}")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write(f"Published (Asia/Taipei): {published}\n\nData date: {signal_date}\n")
           PY
 
       - name: Commit and Push Changes
-        if: ${{ inputs.verify_new_noble != true }}
+        if: ${{ github.ref == 'refs/heads/main' && inputs.verify_new_noble != true && inputs.validate_website_only != true }}
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           touch .last_notify_date
-          git add index.html .last_notify_date historical_signals.json
+          git add index.html .last_notify_date historical_signals.json website_update_state.json
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
