@@ -3,11 +3,10 @@
     "close": 43675.12,
     "data_date": "2026-11-13",
     "ma200": 41331.2077,
-    "overlap_verified": 9,
+    "overlap_verified": 0,
     "period": 200,
     "signal_date": "2026-11-13",
-    "source": "TWSE官方備援＋FinLab歷史",
-    "source_url": "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST",
+    "source": "FinLab",
     "verified": true
   },
   "schema_version": 1,
@@ -4825,7 +4824,7 @@
     ],
     "frozen_before": "2026-11-11",
     "frozen_history_sha256": "86c0c879a60d08749f4e57b510128fada68ddee758bc4713443023fe6dfa18c5",
-    "input_fingerprint": "987aaae5df378f1892d93ddd0b8ec6180aa2a111eea5e780a894b8701b9a6420",
+    "input_fingerprint": "ec057e4c20d9b5fb3986caaef1130a249a6d6994ae713ac5f8aec732f1e7dd47",
     "last_data_date": "2026-11-13",
     "rules_version": "strategy03b_current_rules_legacy_fill_v1"
   }
