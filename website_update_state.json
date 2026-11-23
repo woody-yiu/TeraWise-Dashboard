@@ -1,17 +1,18 @@
 {
   "benchmark": {
-    "close": 36033.29,
-    "data_date": "2026-11-20",
-    "ma200": 41527.3424,
-    "overlap_verified": 0,
+    "close": 36811.89,
+    "data_date": "2026-11-23",
+    "ma200": 41555.17,
+    "overlap_verified": 15,
     "period": 200,
-    "signal_date": "2026-11-20",
-    "source": "FinLab",
+    "signal_date": "2026-11-23",
+    "source": "TWSE官方備援＋FinLab歷史",
+    "source_url": "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST",
     "verified": true
   },
   "schema_version": 1,
   "signals": {
-    "cache_sha256": "0d4c05e311cf6cd0eceeaa223541b48b1f5403e4cd14e70b8594597aff69ff57",
+    "cache_sha256": "df8118912cfaf733ab3bb842dadfa4f3ce83814d27eaf93ec327fb9ca3e6032d",
     "computed_dates": [
       "2007-04-23",
       "2007-04-24",
@@ -4825,12 +4826,13 @@
       "2026-11-17",
       "2026-11-18",
       "2026-11-19",
-      "2026-11-20"
+      "2026-11-20",
+      "2026-11-23"
     ],
     "frozen_before": "2026-11-11",
     "frozen_history_sha256": "86c0c879a60d08749f4e57b510128fada68ddee758bc4713443023fe6dfa18c5",
-    "input_fingerprint": "ecde5b384cb30e6d15e10a44ea507347e8e0b19ffa1a7f8775bd60390513af43",
-    "last_data_date": "2026-11-20",
+    "input_fingerprint": "7482d75de42420990a80e44d22f6af40052433a091d54937c3717aca5967ab9a",
+    "last_data_date": "2026-11-23",
     "rules_version": "strategy03b_current_rules_legacy_fill_v1"
   }
 }
